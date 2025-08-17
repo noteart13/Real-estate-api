@@ -1,77 +1,78 @@
-# main.py
-import logging
-import re
-import requests
-from fastapi import FastAPI, HTTPException
+# app/main.py
+import logging, re, asyncio
+from fastapi import FastAPI, HTTPException, Query
 from app.schemas import SearchResponse
 from app.scrapers.domain import scrape_domain
 from app.scrapers.realestate import scrape_realestate
+from app.scrapers.search import find_domain_detail, find_rea_detail, looks_like_detail_url
 from app.embeddings.clip_embedder import load_model, get_embedding
 from app.cache import get_from_cache, set_to_cache
-from urllib.parse import quote
-import asyncio
-app = FastAPI()
+
 logger = logging.getLogger(__name__)
-# Load CLIP model on startup
+app = FastAPI(title="Realestate-CLIP API")
+
 @app.on_event("startup")
 async def startup_event():
     load_model()
+    logger.info("API ready")
 
+_MAX_IMAGES = 12  # tránh embed quá nhiều ảnh/lượt
 
-
-def generate_search_urls(address: str) -> dict:
-    # Chuẩn hóa địa chỉ - chỉ giữ chữ cái, số và khoảng trắng
-    cleaned_address = re.sub(r'[^\w\s]', '', address).strip()
-    
-    # Tạo slug an toàn cho URL
-    slug = re.sub(r'\s+', '-', cleaned_address).lower()
-    
-    return {
-        "domain": f"https://www.domain.com.au/sale/{slug}-qld-4067/",
-        "realestate": f"https://www.realestate.com.au/buy/in-{slug},+qld+4067"
-    }
-async def scrape_properties(address: str) -> list:
-    urls = generate_search_urls(address)
-    # We'll scrape both sites concurrently
+async def _embed_images(urls: list[str]) -> list[list[float]]:
     loop = asyncio.get_running_loop()
-    domain_data = await loop.run_in_executor(None, scrape_domain, urls['domain'])
-    realestate_data = await loop.run_in_executor(None, scrape_realestate, urls['realestate'])
-    
-    results = []
-    if domain_data:
-        results.append(domain_data)
-    if realestate_data:
-        results.append(realestate_data)
-    
-    # Generate embeddings for images
-    for prop in results:
-        embeddings = []
-        for img_url in prop['image_urls']:
-            embedding = await loop.run_in_executor(None, get_embedding, img_url)
-            if embedding:
-                embeddings.append(embedding)
-        prop['image_embeddings'] = embeddings
-    
-    return results
+    tasks = [loop.run_in_executor(None, get_embedding, u) for u in urls[:_MAX_IMAGES]]
+    embs = await asyncio.gather(*tasks)
+    return [e for e in embs if e]
+
+async def _scrape_one(url: str, source: str) -> dict | None:
+    loop = asyncio.get_running_loop()
+    if source == "domain":
+        data = await loop.run_in_executor(None, scrape_domain, url)
+    else:
+        data = await loop.run_in_executor(None, scrape_realestate, url)
+
+    if not data:
+        return None
+    # embeddings
+    data["image_embeddings"] = await _embed_images(data.get("image_urls", []))
+    return data
+
+async def _discover_and_scrape(address_or_url: str) -> list[dict]:
+    # Nếu người dùng đưa thẳng URL chi tiết → dùng luôn
+    if looks_like_detail_url(address_or_url):
+        src = "domain" if "domain.com.au" in address_or_url else "realestate"
+        one = await _scrape_one(address_or_url, src)
+        return [one] if one else []
+
+    # Ngược lại: coi là địa chỉ → tìm URL chi tiết trên 2 site
+    dom_url, rea_url = await asyncio.gather(
+        asyncio.get_running_loop().run_in_executor(None, find_domain_detail, address_or_url),
+        asyncio.get_running_loop().run_in_executor(None, find_rea_detail, address_or_url),
+    )
+
+    tasks = []
+    if dom_url: tasks.append(_scrape_one(dom_url, "domain"))
+    if rea_url: tasks.append(_scrape_one(rea_url, "realestate"))
+    if not tasks:
+        return []
+    results = await asyncio.gather(*tasks)
+    return [r for r in results if r]
+
 @app.post("/search", response_model=SearchResponse)
-async def search_property(address: str):
+async def search_property(address: str = Query(..., description="Full address or direct listing URL")):
+    address = address.strip()
     if not address:
         raise HTTPException(status_code=400, detail="Address is required")
-    
-    # Check cache
+
     cached = get_from_cache(address)
     if cached is not None:
         return {"properties": cached}
-    
+
     try:
-        # Scrape data - khởi tạo biến properties ở đây
-        properties = await scrape_properties(address)
-        
-        # Cache the result
-        if properties:  # Chỉ lưu cache nếu có dữ liệu
+        properties = await _discover_and_scrape(address)
+        if properties:
             set_to_cache(address, properties)
-        
         return {"properties": properties}
     except Exception as e:
-        logger.error(f"Search failed: {str(e)}")
-        return {"properties": []}  # Trả về danh sách rỗng khi có lỗi
+        logger.error(f"Search failed: {e}", exc_info=True)
+        return {"properties": []}
