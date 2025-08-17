@@ -16,34 +16,8 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 # POST /search
 # Search properties by address
 
-# Request:
-
-json
 {
-  "address": "107/131 Sir Fred Schonell Drive, St Lucia, Qld 4067"
-}
-Successful Response:
-
-json
-{
-  "properties": [
-    {
-      "source": "domain",
-      "address": "107/131 Sir Fred Schonell Drive, St Lucia QLD 4067",
-      "price": "$700,000",
-      "bedrooms": 2,
-      "bathrooms": 2,
-      "parking": 1,
-      "property_type": "Apartment",
-      "description": "This expansive two-bedroom apartment...",
-      "features": ["Secure Parking", "Air conditioning"],
-      "image_urls": ["https://...", ...],
-      "floorplan_url": "https://...",
-      "image_embeddings": [[0.123, ...], ...]
-    },
-    {
-      "source": "realestate",
-      ...
-    }
-  ]
+  "address": "107/131 Sir Fred Schonell Drive, St Lucia, Qld 4067",
+  "include_embeddings": true,
+  "max_images": 12
 }
