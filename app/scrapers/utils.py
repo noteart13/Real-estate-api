@@ -1,6 +1,7 @@
 # app/scrapers/utils.py
 import logging, re, time, json, random
 import requests
+from typing import Optional
 from difflib import SequenceMatcher
 from urllib.parse import urlparse
 from urllib.robotparser import RobotFileParser
@@ -11,7 +12,7 @@ logger = logging.getLogger(__name__)
 ROBOTS_CACHE = {}
 
 HEADERS = {
-    "User-Agent": config.USER_AGENT,  # HÃY dùng UA thật (xem gợi ý bên dưới)
+    "User-Agent": config.USER_AGENT,
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-AU,en;q=0.9",
     "Cache-Control": "no-cache",
@@ -28,7 +29,6 @@ def _robots_for(base_url: str) -> RobotFileParser:
         return rp
     except Exception as e:
         logger.warning(f"robots.txt load failed for {base_url}: {e}")
-        # IMPORTANT: parse([]) để can_fetch() không default False khi lỗi tải robots
         try:
             rp.parse([])
         except Exception:
@@ -60,10 +60,9 @@ def _fetch_with_scrapingbee(url: str, render_js: bool = False) -> BeautifulSoup 
                 "url": url,
                 "render_js": "true" if render_js else "false",
                 "wait": "2000",
-                # Kinh nghiệm cho REA/Domain:
-                "premium_proxy": "true",      # giảm 429
-                "country_code": "au",         # định tuyến tại AU
-                "block_resources": "true",    # giảm lỗi/nhẹ trang; đổi "false" nếu thiếu anchors
+                "premium_proxy": "true",
+                "country_code": "au",
+                "block_resources": "true",
             },
             timeout=max(config.REQUEST_TIMEOUT, 90),
             headers=HEADERS,
@@ -95,7 +94,6 @@ def fetch_url(
         try:
             resp = requests.get(url, headers=HEADERS, timeout=config.REQUEST_TIMEOUT, proxies=proxies)
             if resp.status_code == 200:
-                # thêm jitter nhẹ để né rate-limit theo host
                 time.sleep(config.CRAWL_DELAY + random.uniform(0.1, 0.4))
                 return BeautifulSoup(resp.text, "html.parser")
 
@@ -116,7 +114,7 @@ def fetch_url(
             bee = _fetch_with_scrapingbee(url, render_js=bool(render_js))
             return bee
 
-# -------- helpers được module khác import --------
+# -------- generic helpers --------
 
 def clean_text(text: str) -> str:
     return re.sub(r"\s+", " ", text or "").strip()
@@ -161,11 +159,11 @@ def extract_number(text: str) -> str:
         return "N/A"
     m = re.search(r"\d+", text)
     return m.group(0) if m else "N/A"
-# ==== Address helpers (add) ==============================================
 
+# ==== Address & image helpers ============================================
 
 def canonicalize_address(s: str) -> str:
-    """Đưa địa chỉ về dạng chuẩn để so khớp: hạ chữ, bỏ ký tự thừa, rút gọn state."""
+    """Đưa địa chỉ về dạng chuẩn để so khớp: hạ chữ, rút gọn state, bỏ ký tự thừa."""
     s = clean_text(s or "").lower()
     s = re.sub(r"\bqueensland\b", "qld", s)
     s = re.sub(r"\bnew south wales\b", "nsw", s)
@@ -174,7 +172,6 @@ def canonicalize_address(s: str) -> str:
     return s
 
 def address_similarity(a: str | None, b: str | None) -> float:
-    """Tính độ giống nhau 0..1 giữa hai địa chỉ (sau khi chuẩn hoá)."""
     a = canonicalize_address(a or "")
     b = canonicalize_address(b or "")
     if not a or not b:
@@ -183,7 +180,6 @@ def address_similarity(a: str | None, b: str | None) -> float:
 
 def extract_page_address(soup: BeautifulSoup) -> str | None:
     """Ưu tiên đọc địa chỉ từ JSON-LD, fallback một số selector phổ biến."""
-    # 1) JSON-LD
     for blk in jsonld_blocks(soup):
         addr = blk.get("address")
         if isinstance(addr, dict):
@@ -196,7 +192,6 @@ def extract_page_address(soup: BeautifulSoup) -> str | None:
             s = clean_text(" ".join([p for p in parts if p]))
             if s:
                 return s
-    # 2) Fallback selector
     for sel in [
         'meta[property="og:title"]',
         '[itemprop="streetAddress"]',
@@ -210,4 +205,40 @@ def extract_page_address(soup: BeautifulSoup) -> str | None:
             if s:
                 return s
     return None
-# ==== /Address helpers ====================================================
+
+def numbers(s: str | None) -> set[str]:
+    return set(re.findall(r"\d+", s or ""))
+
+_REJECT_IMG_PATTERNS = [
+    r"pixel_", r"/Agencys/", r"contact_", r"domain-insights", r"/akam/", r"\.svg$", r"/icons?/",
+]
+
+def filter_photo_urls(urls: list[str]) -> list[str]:
+    out = []
+    for u in urls or []:
+        if any(re.search(p, u) for p in _REJECT_IMG_PATTERNS):
+            continue
+        out.append(u)
+    # dedupe, giữ thứ tự
+    return list(dict.fromkeys(out))
+def to_int_opt(x) -> Optional[int]:
+    if x is None: return None
+    if isinstance(x, (int, float)): return int(x)
+    s = clean_text(str(x))
+    m = re.search(r"\d+", s)
+    return int(m.group(0)) if m else None
+
+def extract_images_generic(soup: BeautifulSoup) -> list[str]:
+    urls = []
+    for img in soup.find_all("img"):
+        src = img.get("src") or img.get("data-src") or img.get("data-original")
+        if src and src.startswith("http"):
+            urls.append(src)
+    return filter_photo_urls(list(dict.fromkeys(urls)))[:40]  # limit an toàn
+
+def first_href(soup: BeautifulSoup, css: str) -> str | None:
+    a = soup.select_one(css)
+    if a:
+        href = a.get("href")
+        return href if href and href.startswith("http") else None
+    return None

@@ -1,109 +1,122 @@
 # app/main.py
 import logging, re, asyncio
-from fastapi import FastAPI, HTTPException, Query
-from app.schemas import SearchResponse
+from typing import Optional, Dict, Any, List
+from fastapi import FastAPI, HTTPException, Query, Body
+from app.schemas import SearchResponse, SearchRequest, Property
 from app.scrapers.domain import scrape_domain
 from app.scrapers.realestate import scrape_realestate
 from app.scrapers.search import find_domain_detail, find_rea_detail, looks_like_detail_url
 from app.embeddings.clip_embedder import load_model, get_embedding
 from app.cache import get_from_cache, set_to_cache
 from app.config import config
-import sys, logging
+import sys
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)],
 )
-
 logger = logging.getLogger(__name__)
 app = FastAPI(title="Realestate-CLIP API")
 
-
-@app.get(
-    "/debug/config",
-    include_in_schema=True,
-    tags=["debug"],
-    summary="Show loaded config (masked)"
-)
-def debug_config():
-    masked = (config.SCRAPINGBEE_API_KEY[:6] + "***") if config.SCRAPINGBEE_API_KEY else "(none)"
-    return {
-        "SCRAPINGBEE_API_KEY": masked,
-        "RESPECT_ROBOTS_TXT": config.RESPECT_ROBOTS_TXT,
-        "CRAWL_DELAY": config.CRAWL_DELAY,
-    }
 @app.on_event("startup")
 async def startup_event():
     load_model()
-    masked = f"{config.SCRAPINGBEE_API_KEY[:6]}***" if config.SCRAPINGBEE_API_KEY else "(none)"
-    logger.info(f"SCRAPINGBEE_API_KEY: {masked}; RESPECT_ROBOTS_TXT={config.RESPECT_ROBOTS_TXT}; CRAWL_DELAY={config.CRAWL_DELAY}")
 
-    # Liệt kê toàn bộ routes để kiểm chứng
-    for r in app.routes:
-        methods = getattr(r, "methods", None)
-        logger.info(f"Route loaded: {r.path}  methods={methods}")
+_MAX_IMAGES_DEFAULT = 12
 
-_MAX_IMAGES = 12  # tránh embed quá nhiều ảnh/lượt
+def _to_int(x) -> Optional[int]:
+    if x is None: return None
+    if isinstance(x, (int, float)): return int(x)
+    s = str(x)
+    m = re.search(r"\d+", s)
+    return int(m.group(0)) if m else None
 
-async def _embed_images(urls: list[str]) -> list[list[float]]:
+def _normalize_payload(p: Dict[str, Any]) -> Dict[str, Any]:
+    """Map dict từ scraper về schema Property (đúng field & kiểu)."""
+    src = p.get("source") or ""
+    source = "domain" if "domain" in src else ("realestate" if "realestate" in src else src)
+    return {
+        "source": source,
+        "url": p.get("url"),
+        "address": p.get("address"),
+        "price": p.get("price"),
+        "bedrooms": _to_int(p.get("bedrooms")),
+        "bathrooms": _to_int(p.get("bathrooms")),
+        "parking": _to_int(p.get("parking") or p.get("car_spaces")),
+        "property_type": p.get("property_type"),
+        "description": p.get("description"),
+        "features": p.get("features") or [],
+        "image_urls": p.get("image_urls") or [],
+        "floorplan_url": p.get("floorplan_url") or p.get("floorplan"),
+        "agent_name": p.get("agent_name"),
+        "agent_phone": p.get("agent_phone"),
+        "inspection_times": p.get("inspection_times") or [],
+        "image_embeddings": p.get("image_embeddings") or [],
+    }
+
+async def _embed_images(urls: List[str], max_images: int) -> List[List[float]]:
     loop = asyncio.get_running_loop()
-    tasks = [loop.run_in_executor(None, get_embedding, u) for u in urls[:_MAX_IMAGES]]
+    tasks = [loop.run_in_executor(None, get_embedding, u) for u in urls[:max_images]]
     embs = await asyncio.gather(*tasks)
     return [e for e in embs if e]
 
-async def _scrape_one(url: str, source: str) -> dict | None:
+async def _scrape_one(url: str, source: str, include_embeddings: bool, max_images: int) -> Dict[str, Any] | None:
     loop = asyncio.get_running_loop()
-    if source == "domain":
-        data = await loop.run_in_executor(None, scrape_domain, url)
-    else:
-        data = await loop.run_in_executor(None, scrape_realestate, url)
-
+    data = await loop.run_in_executor(None, scrape_domain if source=="domain" else scrape_realestate, url)
     if not data:
         return None
-    # embeddings
-    data["image_embeddings"] = await _embed_images(data.get("image_urls", []))
-    return data
+    if include_embeddings:
+        data["image_embeddings"] = await _embed_images(data.get("image_urls", []), max_images)
+    return _normalize_payload(data)
 
-async def _discover_and_scrape(address_or_url: str) -> list[dict]:
-    # Nếu người dùng đưa thẳng URL chi tiết → dùng luôn
+async def _discover_and_scrape(address_or_url: str, include_embeddings: bool, max_images: int) -> List[Dict[str, Any]]:
+    # URL chi tiết -> dùng ngay
     if looks_like_detail_url(address_or_url):
         src = "domain" if "domain.com.au" in address_or_url else "realestate"
-        one = await _scrape_one(address_or_url, src)
+        one = await _scrape_one(address_or_url, src, include_embeddings, max_images)
         return [one] if one else []
 
-    # Ngược lại: coi là địa chỉ → tìm URL chi tiết trên 2 site
+    # Địa chỉ -> tìm detail URL cho 2 site
     dom_url, rea_url = await asyncio.gather(
         asyncio.get_running_loop().run_in_executor(None, find_domain_detail, address_or_url),
         asyncio.get_running_loop().run_in_executor(None, find_rea_detail, address_or_url),
     )
-
     tasks = []
-    if dom_url: tasks.append(_scrape_one(dom_url, "domain"))
-    if rea_url: tasks.append(_scrape_one(rea_url, "realestate"))
-    # trong _discover_and_scrape sau khi dom_url, rea_url:
-    if not dom_url and not rea_url:
-        logger.info(f"No detail URL found via search pages for: {address_or_url}")
-
+    if dom_url: tasks.append(_scrape_one(dom_url, "domain", include_embeddings, max_images))
+    if rea_url: tasks.append(_scrape_one(rea_url, "realestate", include_embeddings, max_images))
     if not tasks:
         return []
     results = await asyncio.gather(*tasks)
     return [r for r in results if r]
 
 @app.post("/search", response_model=SearchResponse)
-async def search_property(address: str = Query(..., description="Full address or direct listing URL")):
-    address = address.strip()
-    if not address:
+async def search_property(
+    address: Optional[str] = Query(None, description="Full address or direct listing URL (query)"),
+    body: Optional[SearchRequest] = Body(None, description="You can also send JSON body")
+):
+    # Hợp nhất nguồn input
+    if body and body.address:
+        addr = body.address.strip()
+        include_embeddings = body.include_embeddings
+        max_images = body.max_images or _MAX_IMAGES_DEFAULT
+    elif address:
+        addr = address.strip()
+        include_embeddings = True
+        max_images = _MAX_IMAGES_DEFAULT
+    else:
         raise HTTPException(status_code=400, detail="Address is required")
 
-    cached = get_from_cache(address)
-    if cached is not None:
-        return {"properties": cached}
+    # Cache theo địa chỉ (có thể mở rộng key theo include_embeddings/max_images nếu cần)
+    cached = get_from_cache(addr)
+    if cached is not None and include_embeddings:   # chỉ trả cache khi có embed sẵn
+        return {"properties": [Property(**_normalize_payload(p)) for p in cached]}
 
     try:
-        properties = await _discover_and_scrape(address)
-        if properties:
-            set_to_cache(address, properties)
-        return {"properties": properties}
+        props = await _discover_and_scrape(addr, include_embeddings, max_images)
+        if props and include_embeddings:
+            set_to_cache(addr, props)
+        return {"properties": [Property(**p) for p in props]}
     except Exception as e:
         logger.error(f"Search failed: {e}", exc_info=True)
         return {"properties": []}

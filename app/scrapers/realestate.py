@@ -1,137 +1,98 @@
-# app/scrapers/realestate.py
-import logging, re
+from typing import Optional, Dict, Any, List
 from bs4 import BeautifulSoup
-from .utils import fetch_url, clean_text, clean_price, jsonld_blocks, extract_number
+import re
+from .utils import (
+    fetch_url, clean_text, clean_price, jsonld_blocks,
+    to_int_opt, extract_images_generic, filter_photo_urls
+)
 
-logger = logging.getLogger(__name__)
-
-def _from_jsonld(blocks: list[dict]) -> dict | None:
-    # Realestate thường có "Product", "Offer", "SingleFamilyResidence"... với image & offers
-    best = {}
-    for b in blocks:
-        try:
-            addr = b.get("address") or b.get("itemOffered", {}).get("address")
-            if isinstance(addr, dict):
-                address = clean_text(" ".join(filter(None, [
-                    addr.get("streetAddress"), addr.get("addressLocality"),
-                    addr.get("addressRegion"), addr.get("postalCode"), addr.get("addressCountry")
-                ])))
-            else:
-                address = clean_text(str(addr))
-
-            offers = b.get("offers") or {}
-            price = offers.get("price") or offers.get("priceSpecification", {}).get("price")
-
-            images = b.get("image") or []
-            if isinstance(images, str): images = [images]
-
-            bed = (b.get("numberOfRooms") or b.get("numberOfBedrooms") or
-                   b.get("itemOffered", {}).get("numberOfBedrooms"))
-            bath = (b.get("numberOfBathroomsTotal") or b.get("numberOfBathrooms") or
-                    b.get("itemOffered", {}).get("numberOfBathroomsTotal"))
-            car  = b.get("numberOfParkingSpaces") or b.get("itemOffered", {}).get("numberOfParkingSpaces")
-
-            desc = b.get("description") or ""
-            ptype = b.get("@type") or b.get("itemOffered", {}).get("@type")
-
-            # Chỉ nhận nếu có Address hoặc có Images hợp lệ
-            if address or images:
-                best = {
-                    "address": address or "N/A",
-                    "price": clean_price(str(price) if price else ""),
-                    "bedrooms": extract_number(str(bed)) if bed else "N/A",
-                    "bathrooms": extract_number(str(bath)) if bath else "N/A",
-                    "parking": extract_number(str(car)) if car else "N/A",
-                    "property_type": clean_text(ptype) if ptype else "Property",
-                    "description": clean_text(desc) or "N/A",
-                    "image_urls": [i for i in images if isinstance(i, str)],
-                }
-        except Exception:
-            continue
-    return best or None
-
-def _images_fallback(soup: BeautifulSoup) -> list[str]:
-    out = []
-    for img in soup.select('img[src]'):
-        src = img.get("src")
-        if src and src.startswith("http"):
-            out.append(src.split("?")[0])
-    return list(dict.fromkeys(out))[:20]
-
-def scrape_realestate(url: str) -> dict | None:
-    soup = fetch_url(url)
+async def scrape_realestate(url: str) -> Optional[Dict[str, Any]]:
+    soup = fetch_url(url, ignore_robots=True, max_retries=1, render_js=False)
     if not soup:
         return None
 
-    try:
-        data = {
-            "source": "realestate.com.au",
-            "url": url,
-            "address": "N/A",
-            "price": "Contact agent",
-            "bedrooms": "N/A",
-            "bathrooms": "N/A",
-            "parking": "N/A",
-            "property_type": "Property",
-            "description": "N/A",
-            "features": [],
-            "image_urls": [],
-            "floorplan": None,
-            "agent_name": "N/A",
-            "agent_phone": "N/A",
-            "inspection_times": [],
-        }
+    item: Dict[str, Any] = {"source": "realestate", "url": url}
 
-        jl = _from_jsonld(jsonld_blocks(soup))
-        if jl:
-            data.update(jl)
+    # --- JSON-LD ưu tiên ---
+    for blk in jsonld_blocks(soup):
+        addr = blk.get("address")
+        if isinstance(addr, dict):
+            s = clean_text(" ".join([addr.get(k, "") for k in ("streetAddress","addressLocality","addressRegion","postalCode")]))
+            if s: item["address"] = s
+        elif isinstance(addr, str):
+            item["address"] = clean_text(addr)
 
-        # Fallback HTML
-        addr = soup.select_one("h1.property-info-address")
-        if addr: data["address"] = clean_text(addr.text)
+        price = blk.get("price")
+        if not price and isinstance(blk.get("offers"), dict):
+            price = blk["offers"].get("price") or blk["offers"].get("priceSpecification", {}).get("price")
+        if price:
+            item["price"] = clean_price(str(price))
 
-        price = soup.select_one("div.property-price")
-        if price: data["price"] = clean_price(price.text)
+        item["bedrooms"]  = item.get("bedrooms")  or to_int_opt(blk.get("numberOfBedrooms") or blk.get("bedrooms"))
+        item["bathrooms"] = item.get("bathrooms") or to_int_opt(blk.get("numberOfBathroomsTotal") or blk.get("bathrooms"))
+        item["parking"]   = item.get("parking")   or to_int_opt(blk.get("carSpaces") or blk.get("numberOfParkingSpaces"))
 
-        bed = soup.select_one(".rui-icon-bed + span")
-        if bed: data["bedrooms"] = extract_number(bed.text)
-        bath = soup.select_one(".rui-icon-bath + span")
-        if bath: data["bathrooms"] = extract_number(bath.text)
-        car  = soup.select_one(".rui-icon-car + span")
-        if car: data["parking"] = extract_number(car.text)
+        ptype = blk.get("propertyType") or blk.get("@type")
+        if isinstance(ptype, list):
+            item["property_type"] = ", ".join([str(x) for x in ptype])
+        elif isinstance(ptype, str):
+            item["property_type"] = ptype
 
-        desc = soup.select_one("div.property-info__description")
-        if desc: data["description"] = clean_text(desc.get_text(" ", strip=True))
+        if isinstance(blk.get("description"), str):
+            item["description"] = clean_text(blk["description"])
 
-        feats = []
-        for li in soup.select("ul.property-features li"):
-            t = clean_text(li.get_text(" ", strip=True))
-            if t: feats.append(t)
-        data["features"] = feats
+        imgs = blk.get("image") or blk.get("images")
+        if isinstance(imgs, list):
+            item.setdefault("image_urls", []).extend([u for u in imgs if isinstance(u, str) and u.startswith("http")])
+        elif isinstance(imgs, str) and imgs.startswith("http"):
+            item.setdefault("image_urls", []).append(imgs)
 
-        imgs = data["image_urls"] or _images_fallback(soup)
-        data["image_urls"] = imgs[:20]
+    # --- Fallbacks HTML ---
+    if not item.get("address"):
+        h1 = soup.select_one("h1.property-info-address, h1[data-testid='address']")
+        if h1:
+            item["address"] = clean_text(h1.get_text(" ", strip=True))
 
-        # floorplan
-        for a in soup.find_all("a"):
-            txt = clean_text(a.get_text(" ", strip=True)).lower()
-            if "floorplan" in txt and a.has_attr("href"):
-                data["floorplan"] = a["href"]
-                break
+    if not item.get("price"):
+        pr = soup.select_one("div.property-price, span[data-testid='listing-details__summary-title']")
+        if pr:
+            item["price"] = clean_price(pr.get_text(" ", strip=True))
 
-        # agent (các class có thể thay đổi, để fallback nhẹ)
-        ag = soup.select_one('[class*="agent"] [class*="name"], .realestate-agent__name')
-        if ag: data["agent_name"] = clean_text(ag.get_text(" ", strip=True))
-        ph = soup.select_one('[class*="agent"] [href^="tel:"], .realestate-agent__phone')
-        if ph: data["agent_phone"] = clean_text(ph.get_text(" ", strip=True))
+    if not item.get("description"):
+        meta = soup.select_one("meta[name='description']") or soup.select_one("meta[property='og:description']")
+        if meta and meta.get("content"):
+            item["description"] = clean_text(meta["content"])
 
-        # inspections
-        ins = []
-        for t in soup.select("time[datetime]"):
-            ins.append(t["datetime"])
-        data["inspection_times"] = list(dict.fromkeys(ins))
+    if not item.get("image_urls"):
+        item["image_urls"] = extract_images_generic(soup)
+    item["image_urls"] = filter_photo_urls(item.get("image_urls", []))[:40]
 
-        return data
-    except Exception as e:
-        logger.error(f"Realestate scrape error: {e}", exc_info=True)
-        return None
+    # Features (tên class hay đổi, nên lượm theo ul/li chung)
+    feats = []
+    for el in soup.select("ul.property-features li, ul[class*='features'] li"):
+        t = clean_text(el.get_text(" ", strip=True))
+        if t: feats.append(t)
+    if feats: item["features"] = feats[:50]
+
+    # Floorplan
+    a = soup.find("a", string=re.compile(r"floor\s*plan", re.I))
+    if a and a.get("href"):
+        href = a["href"]
+        if not href.startswith("http"):
+            href = "https://www.realestate.com.au" + href
+        item["floorplan_url"] = href
+
+    # Agent
+    an = soup.select_one("a.realestate-agent__name, [data-testid='agent-name']")
+    ap = soup.select_one("a.realestate-agent__phone, [data-testid='agent-phone']")
+    if an: item["agent_name"] = clean_text(an.get_text(" ", strip=True))
+    if ap: item["agent_phone"] = clean_text(ap.get_text(" ", strip=True))
+
+    # Inspection times
+    times = []
+    for tim in soup.select("div.inspection-times time, [data-testid='inspection-times'] time"):
+        if tim.get("datetime"):
+            times.append(tim["datetime"])
+    if times: item["inspection_times"] = times
+
+    return item

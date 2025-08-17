@@ -33,20 +33,15 @@ def _domain_search_url(address: str) -> str:
     return f"https://www.domain.com.au/sale/{suburb}-{state}-{pc}/" if state and pc else f"https://www.domain.com.au/sale/{suburb}/"
 
 def _rea_search_url(address: str) -> str:
-    """
-    QUAN TRỌNG: chỉ dùng 'suburb, STATE PC' (không dùng cả street).
-    """
+    """Chỉ dùng 'suburb, STATE PC' (không dùng cả street)."""
     suburb, state, pc, suburb_q = _parse_loc(address)
     q = suburb_q if not (state and pc) else f"{suburb_q}, {state.upper()} {pc}"
     return f"https://www.realestate.com.au/buy/in-{quote_plus(q)}/list-1"
 
 def _normalize_address_variants(address: str) -> list[str]:
     s = re.sub(r"\s+", " ", address.strip())
-    # Loại 0 thừa trước unit: "0808/9 ..." -> "808/9 ..."
-    s = re.sub(r"\b0+(\d+)(?=/)", r"\1", s)
-
+    s = re.sub(r"\b0+(\d+)(?=/)", r"\1", s)  # Loại 0 thừa trước unit
     variants = {s, s.replace("/", " ")}
-    # Tạo biến thể unit/number
     m = re.match(r"(\d+)[/\\-](\d+)\s+(.*)", s)
     if m:
         unit, num, rest = m.groups()
@@ -56,9 +51,8 @@ def _normalize_address_variants(address: str) -> list[str]:
             f"Apartment {unit}, {num} {rest}",
             f"{num} {rest}",  # bỏ unit
         })
-    # Bỏ postcode, bỏ state
-    variants.add(re.sub(r"\s+\d{4}\b", "", s))
-    variants.add(re.sub(r",\s*[A-Za-z]{2,3}\s*\d{4}\b", "", s))
+    variants.add(re.sub(r"\s+\d{4}\b", "", s))                          # bỏ postcode
+    variants.add(re.sub(r",\s*[A-Za-z]{2,3}\s*\d{4}\b", "", s))         # bỏ state+pc
     return [v for v in variants if v]
 
 def _ddg_candidates(query: str, pattern: re.Pattern, max_results: int = 8, retries: int = 3, backoff: float = 2.0) -> list[str]:
@@ -66,7 +60,6 @@ def _ddg_candidates(query: str, pattern: re.Pattern, max_results: int = 8, retri
     out, last_err = [], None
     for i in range(retries):
         try:
-            # Thêm timeout ngắn để tránh treo
             with DDGS(timeout=15) as ddgs:
                 for r in ddgs.text(query, max_results=max_results):
                     url = (r.get("href") or r.get("url") or "").strip()
@@ -79,7 +72,8 @@ def _ddg_candidates(query: str, pattern: re.Pattern, max_results: int = 8, retri
             logger.warning(f"DDG ratelimit, sleep {sleep:.1f}s")
             time.sleep(sleep)
         except Exception as e:
-            last_err, _ = e, logger.warning(f"DDG error: {e}")
+            last_err = e
+            logger.warning(f"DDG error: {e}")
             break
     if last_err and not out:
         logger.warning(f"DDG candidates failed: {last_err}")
@@ -95,7 +89,7 @@ def _bing_first(address: str, pattern: re.Pattern, site_host: str) -> str | None
         q = f'site:{site_host} "{v}"'
         url = f"https://www.bing.com/search?q={quote_plus(q)}&count=10"
         soup = fetch_url(url, ignore_robots=True, max_retries=1, render_js=True)
-        if not soup: 
+        if not soup:
             continue
         for css in ["li.b_algo h2 a", "h2 a", "a[href]"]:
             for a in soup.select(css):
@@ -127,7 +121,7 @@ def _find_any_property_url_in_html(html: str, base: str, site: str) -> str | Non
 def _first_from_domain_search_page(address: str) -> str | None:
     url = _domain_search_url(address)
     soup = fetch_url(url, ignore_robots=True, max_retries=1, render_js=False)
-    if not soup: 
+    if not soup:
         return None
     base = "https://www.domain.com.au"
     for a in soup.select("a[href]"):
@@ -143,7 +137,7 @@ def _first_from_domain_search_page(address: str) -> str | None:
 def _first_from_rea_search_page(address: str) -> str | None:
     url = _rea_search_url(address)
     soup = fetch_url(url, ignore_robots=True, max_retries=1, render_js=False)
-    if not soup: 
+    if not soup:
         return None
     base = "https://www.realestate.com.au"
     for a in soup.select("a[href]"):
@@ -165,11 +159,8 @@ def find_domain_detail(address: str) -> str | None:
     if u: candidates.append(u)
     u = _bing_first(address, RE_DOMAIN_DETAIL, "domain.com.au")
     if u: candidates.append(u)
-    # chỉ hỏi DDG 1-2 biến thể để tránh rate limit
     for v in _normalize_address_variants(address)[:2]:
         candidates += _ddg_candidates(f'site:domain.com.au "{v}"', RE_DOMAIN_DETAIL, max_results=6)
-
-    # Dedupe
     candidates = list(dict.fromkeys(candidates))
     logger.info(f"[candidates/domain] {len(candidates)} -> {candidates[:5]}{'...' if len(candidates)>5 else ''}")
     return candidates[0] if candidates else None
@@ -182,7 +173,6 @@ def find_rea_detail(address: str) -> str | None:
     if u: candidates.append(u)
     for v in _normalize_address_variants(address)[:2]:
         candidates += _ddg_candidates(f'site:realestate.com.au "{v}"', RE_REA_DETAIL, max_results=6)
-
     candidates = list(dict.fromkeys(candidates))
     logger.info(f"[candidates/rea] {len(candidates)} -> {candidates[:5]}{'...' if len(candidates)>5 else ''}")
     return candidates[0] if candidates else None
