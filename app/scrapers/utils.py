@@ -1,9 +1,9 @@
 # app/scrapers/utils.py
-import logging, re, time, json
+import logging, re, time, json, random
 import requests
+from difflib import SequenceMatcher
 from urllib.parse import urlparse
 from urllib.robotparser import RobotFileParser
-from difflib import SequenceMatcher
 from bs4 import BeautifulSoup
 from app.config import config
 
@@ -11,8 +11,10 @@ logger = logging.getLogger(__name__)
 ROBOTS_CACHE = {}
 
 HEADERS = {
-    "User-Agent": config.USER_AGENT,
+    "User-Agent": config.USER_AGENT,  # HÃY dùng UA thật (xem gợi ý bên dưới)
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-AU,en;q=0.9",
+    "Cache-Control": "no-cache",
 }
 
 def _robots_for(base_url: str) -> RobotFileParser:
@@ -57,10 +59,13 @@ def _fetch_with_scrapingbee(url: str, render_js: bool = False) -> BeautifulSoup 
                 "api_key": config.SCRAPINGBEE_API_KEY,
                 "url": url,
                 "render_js": "true" if render_js else "false",
-                "wait": "2000",              # đợi 2s cho JS
-                "block_resources": "false",  # đừng chặn ảnh/script (an toàn cho search)
+                "wait": "2000",
+                # Kinh nghiệm cho REA/Domain:
+                "premium_proxy": "true",      # giảm 429
+                "country_code": "au",         # định tuyến tại AU
+                "block_resources": "true",    # giảm lỗi/nhẹ trang; đổi "false" nếu thiếu anchors
             },
-            timeout=max(config.REQUEST_TIMEOUT, 90),  # search có thể chậm
+            timeout=max(config.REQUEST_TIMEOUT, 90),
             headers=HEADERS,
         )
         if bee.status_code == 200:
@@ -74,9 +79,8 @@ def fetch_url(
     url: str,
     ignore_robots: bool = False,
     max_retries: int = 1,
-    render_js: bool | None = None,   # <— thêm tham số
+    render_js: bool | None = None,
 ) -> BeautifulSoup | None:
-    # với trang search, bạn có thể đặt ignore_robots=True từ search.py
     if not ignore_robots and not can_fetch_url(url):
         logger.warning(f"Blocked by robots.txt: {url}")
         return None
@@ -91,18 +95,18 @@ def fetch_url(
         try:
             resp = requests.get(url, headers=HEADERS, timeout=config.REQUEST_TIMEOUT, proxies=proxies)
             if resp.status_code == 200:
-                time.sleep(config.CRAWL_DELAY)
+                # thêm jitter nhẹ để né rate-limit theo host
+                time.sleep(config.CRAWL_DELAY + random.uniform(0.1, 0.4))
                 return BeautifulSoup(resp.text, "html.parser")
 
             logger.warning(f"GET {url} -> {resp.status_code}")
-            if resp.status_code == 429 and attempt <= max_retries:
+            if resp.status_code in (403, 429) and attempt <= max_retries:
                 ra = resp.headers.get("Retry-After")
                 sleep_s = float(ra) if ra and ra.isdigit() else 3.0
-                logger.warning(f"429 received, sleep {sleep_s}s then retry")
+                logger.warning(f"{resp.status_code} received, sleep {sleep_s}s then retry")
                 time.sleep(sleep_s)
                 continue
 
-            # Fallback Bee (dùng render_js nếu được yêu cầu)
             bee = _fetch_with_scrapingbee(url, render_js=bool(render_js))
             if bee:
                 return bee
