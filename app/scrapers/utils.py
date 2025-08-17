@@ -21,10 +21,17 @@ def _robots_for(base_url: str) -> RobotFileParser:
     rp.set_url(f"{base_url}/robots.txt")
     try:
         rp.read()
+        ROBOTS_CACHE[base_url] = rp
+        return rp
     except Exception as e:
         logger.warning(f"robots.txt load failed for {base_url}: {e}")
-    ROBOTS_CACHE[base_url] = rp
-    return rp
+        # IMPORTANT: parse([]) để can_fetch() không default False khi lỗi tải robots
+        try:
+            rp.parse([])
+        except Exception:
+            pass
+        ROBOTS_CACHE[base_url] = rp
+        return rp
 
 def can_fetch_url(url: str) -> bool:
     if not config.RESPECT_ROBOTS_TXT:
@@ -37,8 +44,39 @@ def can_fetch_url(url: str) -> bool:
     except Exception:
         return True
 
-def fetch_url(url: str) -> BeautifulSoup | None:
-    if not can_fetch_url(url):
+def _fetch_with_scrapingbee(url: str, render_js: bool = False) -> BeautifulSoup | None:
+    if not config.SCRAPINGBEE_API_KEY:
+        logger.warning("SCRAPINGBEE_API_KEY not set -> cannot use ScrapingBee fallback")
+        return None
+    try:
+        logger.info(f"ScrapingBee fallback: {url} (render_js={render_js})")
+        bee = requests.get(
+            "https://app.scrapingbee.com/api/v1",
+            params={
+                "api_key": config.SCRAPINGBEE_API_KEY,
+                "url": url,
+                "render_js": "true" if render_js else "false",
+                "wait": "2000",              # đợi 2s cho JS
+                "block_resources": "false",  # đừng chặn ảnh/script (an toàn cho search)
+            },
+            timeout=max(config.REQUEST_TIMEOUT, 90),  # search có thể chậm
+            headers=HEADERS,
+        )
+        if bee.status_code == 200:
+            return BeautifulSoup(bee.text, "html.parser")
+        logger.error(f"ScrapingBee failed {bee.status_code}: {bee.text[:200]}")
+    except Exception as e:
+        logger.error(f"ScrapingBee error {url}: {e}")
+    return None
+
+def fetch_url(
+    url: str,
+    ignore_robots: bool = False,
+    max_retries: int = 1,
+    render_js: bool | None = None,   # <— thêm tham số
+) -> BeautifulSoup | None:
+    # với trang search, bạn có thể đặt ignore_robots=True từ search.py
+    if not ignore_robots and not can_fetch_url(url):
         logger.warning(f"Blocked by robots.txt: {url}")
         return None
 
@@ -46,27 +84,34 @@ def fetch_url(url: str) -> BeautifulSoup | None:
     if config.HTTP_PROXY:  proxies["http"]  = config.HTTP_PROXY
     if config.HTTPS_PROXY: proxies["https"] = config.HTTPS_PROXY
 
-    try:
-        resp = requests.get(url, headers=HEADERS, timeout=config.REQUEST_TIMEOUT, proxies=proxies)
-        if resp.status_code != 200:
-            logger.warning(f"GET {url} -> {resp.status_code}")
-            # Fallback ScrapingBee nếu có
-            if config.SCRAPINGBEE_API_KEY:
-                bee = requests.get(
-                    "https://app.scrapingbee.com/api/v1",
-                    params={"api_key": config.SCRAPINGBEE_API_KEY, "url": url, "render_js": "false"},
-                    timeout=config.REQUEST_TIMEOUT,
-                )
-                if bee.status_code == 200:
-                    return BeautifulSoup(bee.text, "html.parser")
-                logger.error(f"ScrapingBee failed {bee.status_code}: {bee.text[:200]}")
-            return None
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=config.REQUEST_TIMEOUT, proxies=proxies)
+            if resp.status_code == 200:
+                time.sleep(config.CRAWL_DELAY)
+                return BeautifulSoup(resp.text, "html.parser")
 
-        time.sleep(config.CRAWL_DELAY)  # lịch sự với host
-        return BeautifulSoup(resp.text, "html.parser")
-    except Exception as e:
-        logger.error(f"fetch_url error {url}: {e}")
-        return None
+            logger.warning(f"GET {url} -> {resp.status_code}")
+            if resp.status_code == 429 and attempt <= max_retries:
+                ra = resp.headers.get("Retry-After")
+                sleep_s = float(ra) if ra and ra.isdigit() else 3.0
+                logger.warning(f"429 received, sleep {sleep_s}s then retry")
+                time.sleep(sleep_s)
+                continue
+
+            # Fallback Bee (dùng render_js nếu được yêu cầu)
+            bee = _fetch_with_scrapingbee(url, render_js=bool(render_js))
+            if bee:
+                return bee
+            return None
+        except Exception as e:
+            logger.error(f"fetch_url error {url}: {e}")
+            bee = _fetch_with_scrapingbee(url, render_js=bool(render_js))
+            return bee
+
+# -------- helpers được module khác import --------
 
 def clean_text(text: str) -> str:
     return re.sub(r"\s+", " ", text or "").strip()
@@ -80,9 +125,8 @@ def clean_price(price_text: str) -> str:
         return "Contact agent"
     m = re.search(r'[\$\u20AC\u00A3\uFFE5]?\s*([\d,.]+)', t)
     if m:
-        amt = m.group(1).replace(",", "")
         try:
-            return f"${int(float(amt)):,}"
+            return f"${int(float(m.group(1).replace(',', ''))):,}"
         except Exception:
             pass
     m = re.search(r'(\d+(?:\.\d+)?)\s*m\b', t)
@@ -108,6 +152,7 @@ def jsonld_blocks(soup: BeautifulSoup) -> list[dict]:
     return blocks
 
 def extract_number(text: str) -> str:
-    if not text: return "N/A"
+    if not text:
+        return "N/A"
     m = re.search(r"\d+", text)
     return m.group(0) if m else "N/A"
