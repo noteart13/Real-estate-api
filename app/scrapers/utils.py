@@ -3,6 +3,7 @@ import logging, re, time, json
 import requests
 from urllib.parse import urlparse
 from urllib.robotparser import RobotFileParser
+from difflib import SequenceMatcher
 from bs4 import BeautifulSoup
 from app.config import config
 
@@ -156,3 +157,53 @@ def extract_number(text: str) -> str:
         return "N/A"
     m = re.search(r"\d+", text)
     return m.group(0) if m else "N/A"
+# ==== Address helpers (add) ==============================================
+
+
+def canonicalize_address(s: str) -> str:
+    """Đưa địa chỉ về dạng chuẩn để so khớp: hạ chữ, bỏ ký tự thừa, rút gọn state."""
+    s = clean_text(s or "").lower()
+    s = re.sub(r"\bqueensland\b", "qld", s)
+    s = re.sub(r"\bnew south wales\b", "nsw", s)
+    s = re.sub(r"[^a-z0-9/,\s\-]", "", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+def address_similarity(a: str | None, b: str | None) -> float:
+    """Tính độ giống nhau 0..1 giữa hai địa chỉ (sau khi chuẩn hoá)."""
+    a = canonicalize_address(a or "")
+    b = canonicalize_address(b or "")
+    if not a or not b:
+        return 0.0
+    return SequenceMatcher(a=a, b=b).ratio()
+
+def extract_page_address(soup: BeautifulSoup) -> str | None:
+    """Ưu tiên đọc địa chỉ từ JSON-LD, fallback một số selector phổ biến."""
+    # 1) JSON-LD
+    for blk in jsonld_blocks(soup):
+        addr = blk.get("address")
+        if isinstance(addr, dict):
+            parts = [
+                addr.get("streetAddress"),
+                addr.get("addressLocality"),
+                addr.get("addressRegion"),
+                addr.get("postalCode"),
+            ]
+            s = clean_text(" ".join([p for p in parts if p]))
+            if s:
+                return s
+    # 2) Fallback selector
+    for sel in [
+        'meta[property="og:title"]',
+        '[itemprop="streetAddress"]',
+        '[data-testid="address"]',
+        'h1'
+    ]:
+        tag = soup.select_one(sel)
+        if tag:
+            s = tag.get("content") or tag.get_text(" ", strip=True)
+            s = clean_text(s)
+            if s:
+                return s
+    return None
+# ==== /Address helpers ====================================================
