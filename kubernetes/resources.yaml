@@ -1,0 +1,212 @@
+# ---------- Namespace ----------
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: property-ns
+---
+# ---------- Config (non-secret) ----------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: property-config
+  namespace: property-ns
+data:
+  USER_AGENT: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+  RESPECT_ROBOTS_TXT: "false"
+  REQUEST_TIMEOUT: "60"
+  CRAWL_DELAY: "1.0"
+  HTTP_PROXY: ""
+  HTTPS_PROXY: ""
+---
+# ---------- Secrets ----------
+apiVersion: v1
+kind: Secret
+metadata:
+  name: property-secrets
+  namespace: property-ns
+type: Opaque
+stringData:
+  SCRAPINGBEE_API_KEY: "<put-your-key-here>"
+---
+# ---------- API Deployment ----------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: property-api
+  namespace: property-ns
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: property-api
+  template:
+    metadata:
+      labels:
+        app: property-api
+    spec:
+      # Nếu cần pull image từ GAR bằng imagePullSecret, uncomment block dưới và tạo secret trước
+      # imagePullSecrets:
+      # - name: gar-pull
+      containers:
+      - name: property-api
+        image: australia-southeast1-docker.pkg.dev/realestate-clip-api/property-repo/property-api:latest
+        imagePullPolicy: Always
+        ports:
+          - name: http
+            containerPort: 8000
+        envFrom:
+          - configMapRef:
+              name: property-config
+        env:
+          - name: REDIS_HOST
+            value: "redis-service"
+          - name: REDIS_PORT
+            value: "6379"
+          - name: SCRAPINGBEE_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: property-secrets
+                key: SCRAPINGBEE_API_KEY
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "1Gi"
+          limits:
+            cpu: "2"
+            memory: "4Gi"
+        readinessProbe:
+          httpGet:
+            path: /debug/config   # bạn đang có endpoint này 200 OK trong log
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /debug/config
+            port: 8000
+          initialDelaySeconds: 20
+          periodSeconds: 20
+          failureThreshold: 3
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+          runAsUser: 10001
+      restartPolicy: Always
+---
+# ---------- API Service (external LB) ----------
+apiVersion: v1
+kind: Service
+metadata:
+  name: property-service
+  namespace: property-ns
+spec:
+  selector:
+    app: property-api
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 8000
+  type: LoadBalancer
+---
+# ---------- HPA (tự mở rộng theo CPU) ----------
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: property-api-hpa
+  namespace: property-ns
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: property-api
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+---
+# ---------- PDB (tránh downtime khi nâng cấp node) ----------
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: property-api-pdb
+  namespace: property-ns
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: property-api
+---
+# ---------- Redis (có persistence) ----------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: property-ns
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:7-alpine
+        args: ["redis-server", "--appendonly", "yes"]
+        ports:
+          - containerPort: 6379
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        volumeMounts:
+          - name: redis-data
+            mountPath: /data
+      volumes:
+        - name: redis-data
+          persistentVolumeClaim:
+            claimName: redis-pvc
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-pvc
+  namespace: property-ns
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi
+  storageClassName: standard
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-service
+  namespace: property-ns
+spec:
+  selector:
+    app: redis
+  ports:
+    - protocol: TCP
+      port: 6379
+      targetPort: 6379
+  type: ClusterIP

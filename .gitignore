@@ -19,9 +19,7 @@ Dockerfile
 docker-compose.yml
 .dockerignore
 
-# Kubernetes
-kubernetes/
-!kubernetes/resources.yaml  # Giữ file resources.yaml nhưng bỏ các file khác
+
 
 # Build and distribution
 dist/
