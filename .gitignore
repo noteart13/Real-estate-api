@@ -56,7 +56,7 @@ logs/
 *.pt
 *.bin
 *.h5
-embeddings/
+
 
 # System
 .DS_Store
