@@ -26,6 +26,11 @@ pip install -U pip
 pip install -r requirements.txt
 ```
 
+### Install Redis
+- Windows: download from `https://github.com/microsoftarchive/redis`, extract và chạy `redis-server`
+- Mac: `brew install redis && brew services start redis`
+- Linux: `sudo apt install redis-server`
+
 ### Run API
 ```bash
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
