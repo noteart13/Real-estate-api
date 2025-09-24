@@ -6,6 +6,31 @@ from .utils import (
     to_int_opt, extract_images_generic, filter_photo_urls
 )
 
+_IGNORED_JSONLD_TYPES = {
+    "FAQPage", "BreadcrumbList", "Organization", "WebPage", "WebSite",
+}
+
+
+def _select_property_type(raw_type) -> Optional[str]:
+    if isinstance(raw_type, list):
+        types = [str(x) for x in raw_type if str(x) not in _IGNORED_JSONLD_TYPES]
+        return types[0] if types else None
+    if isinstance(raw_type, str) and raw_type not in _IGNORED_JSONLD_TYPES:
+        return raw_type
+    return None
+
+
+def _extract_int_via_regex(html: str, patterns: List[re.Pattern]) -> Optional[int]:
+    for pat in patterns:
+        m = pat.search(html)
+        if m:
+            try:
+                return int(m.group(1))
+            except Exception:
+                continue
+    return None
+
+
 def scrape_realestate(url: str) -> Optional[Dict[str, Any]]:
     soup = fetch_url(url, ignore_robots=True, max_retries=1, render_js=False)
     if not soup:
@@ -32,10 +57,8 @@ def scrape_realestate(url: str) -> Optional[Dict[str, Any]]:
         item["bathrooms"] = item.get("bathrooms") or to_int_opt(blk.get("numberOfBathroomsTotal") or blk.get("bathrooms"))
         item["parking"]   = item.get("parking")   or to_int_opt(blk.get("carSpaces") or blk.get("numberOfParkingSpaces"))
 
-        ptype = blk.get("propertyType") or blk.get("@type")
-        if isinstance(ptype, list):
-            item["property_type"] = ", ".join([str(x) for x in ptype])
-        elif isinstance(ptype, str):
+        ptype = _select_property_type(blk.get("propertyType") or blk.get("@type"))
+        if ptype:
             item["property_type"] = ptype
 
         if isinstance(blk.get("description"), str):
@@ -94,5 +117,39 @@ def scrape_realestate(url: str) -> Optional[Dict[str, Any]]:
         if tim.get("datetime"):
             times.append(tim["datetime"])
     if times: item["inspection_times"] = times
+
+    # --- Heuristics: bedrooms/bathrooms/parking via embedded JSON or visible text ---
+    if not (item.get("bedrooms") and item.get("bathrooms") and item.get("parking")):
+        html = str(soup)
+        beds = _extract_int_via_regex(html, [
+            re.compile(r'"(?:numberOfBedrooms|bedrooms|beds)"\s*:\s*(\d+)', re.I),
+            re.compile(r'"bedroomCount"\s*:\s*(\d+)', re.I),
+        ])
+        baths = _extract_int_via_regex(html, [
+            re.compile(r'"(?:numberOfBathroomsTotal|bathrooms|baths)"\s*:\s*(\d+)', re.I),
+            re.compile(r'"bathroomCount"\s*:\s*(\d+)', re.I),
+        ])
+        cars = _extract_int_via_regex(html, [
+            re.compile(r'"(?:carSpaces|numberOfParkingSpaces)"\s*:\s*(\d+)', re.I),
+            re.compile(r'"car[s ]?space[s]?"\s*:\s*(\d+)', re.I),
+        ])
+
+        text_blob = clean_text(soup.get_text(" ", strip=True)).lower()
+        if beds is None:
+            m = re.search(r'(\d+)\s*(?:bed|beds|bedroom)', text_blob)
+            if m: beds = int(m.group(1))
+        if baths is None:
+            m = re.search(r'(\d+)\s*(?:bath|baths|bathroom)', text_blob)
+            if m: baths = int(m.group(1))
+        if cars is None:
+            m = re.search(r'(\d+)\s*(?:car|cars|parking|garage)', text_blob)
+            if m: cars = int(m.group(1))
+
+        if beds is not None:
+            item["bedrooms"] = beds
+        if baths is not None:
+            item["bathrooms"] = baths
+        if cars is not None:
+            item["parking"] = cars
 
     return item
