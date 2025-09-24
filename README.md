@@ -1,7 +1,12 @@
 ## Step to run Projects
-python -m venv .venv
-MAC/Linux: source .venv/bin/activate     
-Windows: .\.venv\Scripts\Activate.ps1
+IMPORTANT: Use Python 3.11 locally (matches Docker base). Python 3.13 will fail to install NumPy/PyTorch wheels on Windows.
+# Windows (recommended)
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+
+# Mac/Linux
+python3.11 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 
 ## Install Redis server

@@ -23,19 +23,6 @@ app = FastAPI(title="Realestate-CLIP API")
 async def startup_event():
     load_model()
 
-@app.get("/healthz")
-def healthz():
-    return {"status": "ok"}
-
-@app.get("/debug/config")
-def debug_config():
-    return {
-        "redis": {"host": config.REDIS_HOST, "port": config.REDIS_PORT, "db": config.REDIS_DB},
-        "clip": {"model": config.CLIP_MODEL, "device": config.CLIP_DEVICE},
-        "robots": config.RESPECT_ROBOTS_TXT,
-        "timeout": config.REQUEST_TIMEOUT,
-    }
-
 _MAX_IMAGES_DEFAULT = 12
 
 def _to_int(x) -> Optional[int]:
@@ -133,3 +120,23 @@ async def search_property(
     except Exception as e:
         logger.error(f"Search failed: {e}", exc_info=True)
         return {"properties": []}
+
+@app.get("/")
+def root():
+    return {
+        "status": "ok",
+        "message": "Realestate-CLIP API. Use /docs, /healthz, /debug/config, POST /search"
+    }
+
+@app.get("/healthz")
+def healthz():
+    return {"status": "ok"}
+
+@app.get("/debug/config")
+def debug_config():
+    from app.config import config as cfg
+    return {
+        "redis": {"host": cfg.REDIS_HOST, "port": cfg.REDIS_PORT, "db": cfg.REDIS_DB},
+        "clip": {"model": cfg.CLIP_MODEL, "device": cfg.CLIP_DEVICE},
+        "http": {"timeout": cfg.REQUEST_TIMEOUT, "ua": cfg.USER_AGENT[:60]},
+    }
