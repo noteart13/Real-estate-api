@@ -23,6 +23,19 @@ app = FastAPI(title="Realestate-CLIP API")
 async def startup_event():
     load_model()
 
+@app.get("/healthz")
+def healthz():
+    return {"status": "ok"}
+
+@app.get("/debug/config")
+def debug_config():
+    return {
+        "redis": {"host": config.REDIS_HOST, "port": config.REDIS_PORT, "db": config.REDIS_DB},
+        "clip": {"model": config.CLIP_MODEL, "device": config.CLIP_DEVICE},
+        "robots": config.RESPECT_ROBOTS_TXT,
+        "timeout": config.REQUEST_TIMEOUT,
+    }
+
 _MAX_IMAGES_DEFAULT = 12
 
 def _to_int(x) -> Optional[int]:

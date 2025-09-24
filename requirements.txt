@@ -6,6 +6,7 @@ duckduckgo_search==6.2.13
 beautifulsoup4==4.12.3
 lxml==5.2.2
 pydantic==2.8.2
+python = 3.13
 python-dotenv==1.0.1
 redis==5.0.8
 regex==2024.7.24

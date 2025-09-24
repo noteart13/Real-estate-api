@@ -6,7 +6,7 @@ from .utils import (
     to_int_opt, extract_images_generic, filter_photo_urls
 )
 
-async def scrape_realestate(url: str) -> Optional[Dict[str, Any]]:
+def scrape_realestate(url: str) -> Optional[Dict[str, Any]]:
     soup = fetch_url(url, ignore_robots=True, max_retries=1, render_js=False)
     if not soup:
         return None
