@@ -105,18 +105,62 @@ def scrape_realestate(url: str) -> Optional[Dict[str, Any]]:
             href = "https://www.realestate.com.au" + href
         item["floorplan_url"] = href
 
-    # Agent
-    an = soup.select_one("a.realestate-agent__name, [data-testid='agent-name']")
-    ap = soup.select_one("a.realestate-agent__phone, [data-testid='agent-phone']")
-    if an: item["agent_name"] = clean_text(an.get_text(" ", strip=True))
-    if ap: item["agent_phone"] = clean_text(ap.get_text(" ", strip=True))
+    # Agent - improved extraction
+    agent_selectors = [
+        "a.realestate-agent__name",
+        "[data-testid='agent-name']",
+        ".agent-name",
+        ".listing-agent",
+        ".property-agent",
+        "a[href*='agent']"
+    ]
+    
+    for selector in agent_selectors:
+        an = soup.select_one(selector)
+        if an:
+            item["agent_name"] = clean_text(an.get_text(" ", strip=True))
+            break
+    
+    # Agent phone - improved extraction
+    phone_selectors = [
+        "a.realestate-agent__phone",
+        "[data-testid='agent-phone']",
+        ".agent-phone",
+        ".listing-agent-phone",
+        "a[href^='tel:']"
+    ]
+    
+    for selector in phone_selectors:
+        ap = soup.select_one(selector)
+        if ap:
+            phone_text = ap.get_text(" ", strip=True) or ap.get("href", "").replace("tel:", "")
+            if phone_text:
+                item["agent_phone"] = clean_text(phone_text)
+                break
 
-    # Inspection times
+    # Inspection times - improved extraction
     times = []
-    for tim in soup.select("div.inspection-times time, [data-testid='inspection-times'] time"):
-        if tim.get("datetime"):
-            times.append(tim["datetime"])
-    if times: item["inspection_times"] = times
+    inspection_selectors = [
+        "div.inspection-times time",
+        "[data-testid='inspection-times'] time",
+        ".inspection-times",
+        "[data-testid*='inspection'] time",
+        "[data-testid*='inspection']"
+    ]
+    
+    for selector in inspection_selectors:
+        for tim in soup.select(selector):
+            if tim.get("datetime"):
+                times.append(tim["datetime"])
+            elif tim.get_text(strip=True):
+                text = clean_text(tim.get_text(strip=True))
+                if text and ("am" in text.lower() or "pm" in text.lower() or ":" in text):
+                    times.append(text)
+        if times:
+            break
+    
+    if times: 
+        item["inspection_times"] = times[:10]
 
     # --- Heuristics: bedrooms/bathrooms/parking via embedded JSON or visible text ---
     if not (item.get("bedrooms") and item.get("bathrooms") and item.get("parking")):
@@ -151,5 +195,110 @@ def scrape_realestate(url: str) -> Optional[Dict[str, Any]]:
             item["bathrooms"] = baths
         if cars is not None:
             item["parking"] = cars
+
+    # Additional property details for RealEstate.com.au
+    # Property size/land area
+    size_selectors = [
+        "[data-testid*='property-size']",
+        "[data-testid*='land-area']",
+        ".property-size",
+        ".land-area",
+        ".property-details .size",
+        ".property-info .size"
+    ]
+    
+    for selector in size_selectors:
+        size_el = soup.select_one(selector)
+        if size_el:
+            size_text = clean_text(size_el.get_text(strip=True))
+            if size_text and ("m²" in size_text or "sqm" in size_text.lower()):
+                item["property_size"] = size_text
+                break
+    
+    # Property status
+    status_selectors = [
+        "[data-testid*='listing-status']",
+        "[data-testid*='property-status']",
+        ".listing-status",
+        ".property-status",
+        ".status-badge",
+        ".property-badge"
+    ]
+    
+    for selector in status_selectors:
+        status_el = soup.select_one(selector)
+        if status_el:
+            status_text = clean_text(status_el.get_text(strip=True))
+            if status_text:
+                item["listing_status"] = status_text
+                break
+    
+    # Price guide/range
+    price_guide_selectors = [
+        "[data-testid*='price-guide']",
+        "[data-testid*='price-range']",
+        ".price-guide",
+        ".price-range",
+        ".estimated-price",
+        ".auction-price"
+    ]
+    
+    for selector in price_guide_selectors:
+        price_el = soup.select_one(selector)
+        if price_el:
+            price_text = clean_text(price_el.get_text(strip=True))
+            if price_text and ("guide" in price_text.lower() or "range" in price_text.lower() or "auction" in price_text.lower()):
+                item["price_guide"] = price_text
+                break
+    
+    # Agency information
+    agency_selectors = [
+        "[data-testid*='agency']",
+        "[data-testid*='real-estate']",
+        ".agency-name",
+        ".real-estate-agency",
+        ".listing-agency",
+        ".property-agency"
+    ]
+    
+    for selector in agency_selectors:
+        agency_el = soup.select_one(selector)
+        if agency_el:
+            agency_text = clean_text(agency_el.get_text(strip=True))
+            if agency_text:
+                item["agency_name"] = agency_text
+                break
+    
+    # Property ID/Listing ID
+    listing_id_patterns = [
+        r'listing[_-]?id["\']?\s*[:=]\s*["\']?(\d+)',
+        r'property[_-]?id["\']?\s*[:=]\s*["\']?(\d+)',
+        r'id["\']?\s*[:=]\s*["\']?(\d{8,})',
+        r'/property-(\d+)/'
+    ]
+    
+    html_content = str(soup)
+    for pattern in listing_id_patterns:
+        match = re.search(pattern, html_content, re.I)
+        if match:
+            item["listing_id"] = match.group(1)
+            break
+    
+    # Days on market
+    dom_selectors = [
+        "[data-testid*='days-on-market']",
+        "[data-testid*='dom']",
+        ".days-on-market",
+        ".dom",
+        ".property-dom"
+    ]
+    
+    for selector in dom_selectors:
+        dom_el = soup.select_one(selector)
+        if dom_el:
+            dom_text = clean_text(dom_el.get_text(strip=True))
+            if dom_text and ("day" in dom_text.lower() or "dom" in dom_text.lower()):
+                item["days_on_market"] = dom_text
+                break
 
     return item

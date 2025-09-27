@@ -18,6 +18,14 @@ class Property(BaseModel):
     agent_phone: Optional[str] = None
     inspection_times: List[str] = Field(default_factory=list)
     image_embeddings: List[List[float]] = Field(default_factory=list)
+    
+    # Additional fields for enhanced data
+    property_size: Optional[str] = None      # e.g., "668m²"
+    listing_status: Optional[str] = None     # e.g., "FOR SALE NOW", "Under Contract"
+    price_guide: Optional[str] = None         # e.g., "Price guide", "Auction"
+    agency_name: Optional[str] = None         # Real estate agency name
+    listing_id: Optional[str] = None          # Property listing ID
+    days_on_market: Optional[str] = None       # Days on market
 
 class SearchRequest(BaseModel):
     address: str
