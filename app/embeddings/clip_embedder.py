@@ -1,5 +1,6 @@
 # app/embeddings/clip_embedder.py
 import logging
+import os
 from io import BytesIO
 
 import requests
@@ -21,7 +22,10 @@ def load_model(force_reload: bool = False):
         model = None
         preprocess = None
     if model is None or preprocess is None:
-        m, p = clip.load("ViT-B/32", device=device)
+        # Force CLIP to use /app/.cache instead of ~/.cache
+        cache_dir = "/app/.cache/clip"
+        os.makedirs(cache_dir, exist_ok=True)
+        m, p = clip.load("ViT-B/32", device=device, download_root=cache_dir)
         m.eval()
         # Không cần gradient cho inference
         for param in m.parameters():

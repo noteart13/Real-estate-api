@@ -54,7 +54,7 @@ spec:
       # - name: gar-pull
       containers:
       - name: property-api
-        image: australia-southeast1-docker.pkg.dev/aagi-raw-band-downloader/property-repo/property-api:v1.0.0
+        image: australia-southeast1-docker.pkg.dev/aagi-raw-band-downloader/property-repo/property-api:v1.0.1
         imagePullPolicy: Always
         ports:
           - name: http
@@ -72,6 +72,12 @@ spec:
               secretKeyRef:
                 name: property-secrets
                 key: SCRAPINGBEE_API_KEY
+          - name: HOME
+            value: "/app"
+          - name: TRANSFORMERS_CACHE
+            value: "/app/.cache/transformers"
+          - name: HF_HOME
+            value: "/app/.cache/huggingface"
         resources:
           requests:
             cpu: "500m"
