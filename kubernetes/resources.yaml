@@ -54,7 +54,7 @@ spec:
       # - name: gar-pull
       containers:
       - name: property-api
-        image: australia-southeast1-docker.pkg.dev/aagi-raw-band-downloader/property-repo/property-api:v1.0.1
+        image: australia-southeast1-docker.pkg.dev/aagi-raw-band-downloader/property-repo/property-api:v1.0.2
         imagePullPolicy: Always
         ports:
           - name: http
