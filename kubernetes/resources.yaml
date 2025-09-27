@@ -97,6 +97,12 @@ spec:
           allowPrivilegeEscalation: false
           runAsNonRoot: true
           runAsUser: 10001
+        volumeMounts:
+          - name: cache-volume
+            mountPath: /app/.cache
+      volumes:
+        - name: cache-volume
+          emptyDir: {}
       restartPolicy: Always
 ---
 # ---------- API Service (external LB) ----------
