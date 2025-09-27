@@ -2,6 +2,7 @@
 import logging, re, asyncio
 from typing import Optional, Dict, Any, List
 from fastapi import FastAPI, HTTPException, Query, Body
+from fastapi.middleware.cors import CORSMiddleware
 from app.schemas import SearchResponse, SearchRequest, Property
 from app.scrapers.domain import scrape_domain
 from app.scrapers.realestate import scrape_realestate
@@ -18,6 +19,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 app = FastAPI(title="Realestate-CLIP API")
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
 
 @app.on_event("startup")
 async def startup_event():
