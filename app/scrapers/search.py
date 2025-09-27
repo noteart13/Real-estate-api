@@ -58,25 +58,47 @@ def _normalize_address_variants(address: str) -> list[str]:
 def _ddg_candidates(query: str, pattern: re.Pattern, max_results: int = 8, retries: int = 3, backoff: float = 2.0) -> list[str]:
     """Trả danh sách URL từ DDG (lọc theo regex), có backoff 'mềm' để tránh 202 Ratelimit."""
     out, last_err = [], None
+    
+    # Reduce max_results to avoid rate limits
+    max_results = min(max_results, 5)
+    
     for i in range(retries):
         try:
-            with DDGS(timeout=15) as ddgs:
-                for r in ddgs.text(query, max_results=max_results):
+            # Add random delay before each attempt
+            if i > 0:
+                delay = random.uniform(1.0, 3.0)
+                logger.info(f"DDG retry {i+1}, waiting {delay:.1f}s")
+                time.sleep(delay)
+            
+            with DDGS(timeout=20) as ddgs:
+                results = list(ddgs.text(query, max_results=max_results))
+                
+                for r in results:
                     url = (r.get("href") or r.get("url") or "").strip()
                     if url and pattern.search(url):
                         out.append(url.split("?")[0])
-            break
+                
+                # If we got results, break early
+                if out:
+                    logger.info(f"DDG found {len(out)} candidates")
+                    break
+                    
         except RatelimitException as e:
             last_err = e
-            sleep = (backoff ** i) + random.uniform(0.2, 0.8)
+            sleep = (backoff ** i) + random.uniform(1.0, 2.0)
             logger.warning(f"DDG ratelimit, sleep {sleep:.1f}s")
             time.sleep(sleep)
         except Exception as e:
             last_err = e
             logger.warning(f"DDG error: {e}")
-            break
+            # For non-rate-limit errors, don't retry immediately
+            if "202" not in str(e):
+                break
+            time.sleep(random.uniform(2.0, 4.0))
+    
     if last_err and not out:
         logger.warning(f"DDG candidates failed: {last_err}")
+    
     # dedupe, giữ thứ tự
     seen, uniq = set(), []
     for u in out:
@@ -153,28 +175,58 @@ def _first_from_rea_search_page(address: str) -> str | None:
 # -------- public API --------
 
 def find_domain_detail(address: str) -> str | None:
-    # Ưu tiên: trang search Domain -> Bing -> 1 lượt DDG nhẹ
+    # Ưu tiên: trang search Domain -> Bing -> DDG chỉ khi cần
     candidates: list[str] = []
+    
+    # Try Domain search page first
     u = _first_from_domain_search_page(address)
-    if u: candidates.append(u)
+    if u: 
+        candidates.append(u)
+        logger.info(f"[candidates/domain] Found via search page: {u}")
+        return u  # Return early if found
+    
+    # Try Bing search
     u = _bing_first(address, RE_DOMAIN_DETAIL, "domain.com.au")
-    if u: candidates.append(u)
-    for v in _normalize_address_variants(address)[:2]:
-        candidates += _ddg_candidates(f'site:domain.com.au "{v}"', RE_DOMAIN_DETAIL, max_results=6)
+    if u: 
+        candidates.append(u)
+        logger.info(f"[candidates/domain] Found via Bing: {u}")
+        return u  # Return early if found
+    
+    # Only try DDG if we haven't found anything yet
+    if not candidates:
+        variants = _normalize_address_variants(address)[:1]  # Only try first variant
+        for v in variants:
+            candidates += _ddg_candidates(f'site:domain.com.au "{v}"', RE_DOMAIN_DETAIL, max_results=3)
+    
     candidates = list(dict.fromkeys(candidates))
-    logger.info(f"[candidates/domain] {len(candidates)} -> {candidates[:5]}{'...' if len(candidates)>5 else ''}")
+    logger.info(f"[candidates/domain] {len(candidates)} -> {candidates[:3]}{'...' if len(candidates)>3 else ''}")
     return candidates[0] if candidates else None
 
 def find_rea_detail(address: str) -> str | None:
     candidates: list[str] = []
+    
+    # Try RealEstate search page first
     u = _first_from_rea_search_page(address)
-    if u: candidates.append(u)
+    if u: 
+        candidates.append(u)
+        logger.info(f"[candidates/rea] Found via search page: {u}")
+        return u  # Return early if found
+    
+    # Try Bing search
     u = _bing_first(address, RE_REA_DETAIL, "realestate.com.au")
-    if u: candidates.append(u)
-    for v in _normalize_address_variants(address)[:2]:
-        candidates += _ddg_candidates(f'site:realestate.com.au "{v}"', RE_REA_DETAIL, max_results=6)
+    if u: 
+        candidates.append(u)
+        logger.info(f"[candidates/rea] Found via Bing: {u}")
+        return u  # Return early if found
+    
+    # Only try DDG if we haven't found anything yet
+    if not candidates:
+        variants = _normalize_address_variants(address)[:1]  # Only try first variant
+        for v in variants:
+            candidates += _ddg_candidates(f'site:realestate.com.au "{v}"', RE_REA_DETAIL, max_results=3)
+    
     candidates = list(dict.fromkeys(candidates))
-    logger.info(f"[candidates/rea] {len(candidates)} -> {candidates[:5]}{'...' if len(candidates)>5 else ''}")
+    logger.info(f"[candidates/rea] {len(candidates)} -> {candidates[:3]}{'...' if len(candidates)>3 else ''}")
     return candidates[0] if candidates else None
 
 def looks_like_detail_url(s: str) -> bool:

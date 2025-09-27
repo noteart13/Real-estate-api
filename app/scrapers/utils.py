@@ -51,33 +51,70 @@ def _fetch_with_scrapingbee(url: str, render_js: bool = False) -> BeautifulSoup 
     if not config.SCRAPINGBEE_API_KEY:
         logger.warning("SCRAPINGBEE_API_KEY not set -> cannot use ScrapingBee fallback")
         return None
-    try:
-        logger.info(f"ScrapingBee fallback: {url} (render_js={render_js})")
-        bee = requests.get(
-            "https://app.scrapingbee.com/api/v1",
-            params={
+    
+    # Try multiple ScrapingBee configurations
+    configs = [
+        {
+            "render_js": "false",
+            "premium_proxy": "true",
+            "country_code": "au",
+            "wait": "1000",
+        },
+        {
+            "render_js": "true",
+            "premium_proxy": "true", 
+            "country_code": "au",
+            "wait": "3000",
+        },
+        {
+            "render_js": "false",
+            "premium_proxy": "false",
+            "country_code": "au",
+            "wait": "1000",
+        }
+    ]
+    
+    for i, config_params in enumerate(configs):
+        try:
+            logger.info(f"ScrapingBee attempt {i+1}: {url} (render_js={config_params['render_js']})")
+            
+            params = {
                 "api_key": config.SCRAPINGBEE_API_KEY,
                 "url": url,
-                "render_js": "true" if render_js else "false",
-                "wait": "2000",
-                "premium_proxy": "true",
-                "country_code": "au",
-                "block_resources": "true",
-            },
-            timeout=max(config.REQUEST_TIMEOUT, 90),
-            headers=HEADERS,
-        )
-        if bee.status_code == 200:
-            return BeautifulSoup(bee.text, "html.parser")
-        logger.error(f"ScrapingBee failed {bee.status_code}: {bee.text[:200]}")
-    except Exception as e:
-        logger.error(f"ScrapingBee error {url}: {e}")
+                **config_params
+            }
+            
+            bee = requests.get(
+                "https://app.scrapingbee.com/api/v1",
+                params=params,
+                timeout=max(config.REQUEST_TIMEOUT, 90),
+                headers=HEADERS,
+            )
+            
+            if bee.status_code == 200:
+                logger.info(f"ScrapingBee success on attempt {i+1}")
+                return BeautifulSoup(bee.text, "html.parser")
+            
+            logger.warning(f"ScrapingBee attempt {i+1} failed {bee.status_code}: {bee.text[:200]}")
+            
+            # If it's a 503 or 500, try next config
+            if bee.status_code in (503, 500) and i < len(configs) - 1:
+                time.sleep(2)  # Brief delay before next attempt
+                continue
+                
+        except Exception as e:
+            logger.error(f"ScrapingBee attempt {i+1} error {url}: {e}")
+            if i < len(configs) - 1:
+                time.sleep(2)
+                continue
+    
+    logger.error(f"All ScrapingBee attempts failed for {url}")
     return None
 
 def fetch_url(
     url: str,
     ignore_robots: bool = False,
-    max_retries: int = 1,
+    max_retries: int = 3,
     render_js: bool | None = None,
 ) -> BeautifulSoup | None:
     if not ignore_robots and not can_fetch_url(url):
@@ -89,30 +126,58 @@ def fetch_url(
     if config.HTTPS_PROXY: proxies["https"] = config.HTTPS_PROXY
 
     attempt = 0
-    while True:
+    while attempt <= max_retries:
         attempt += 1
         try:
+            # Add random delay between requests to avoid rate limits
+            if attempt > 1:
+                delay = config.CRAWL_DELAY * (2 ** (attempt - 1)) + random.uniform(0.5, 2.0)
+                logger.info(f"Retry attempt {attempt}, waiting {delay:.1f}s")
+                time.sleep(delay)
+            
             resp = requests.get(url, headers=HEADERS, timeout=config.REQUEST_TIMEOUT, proxies=proxies)
             if resp.status_code == 200:
                 time.sleep(config.CRAWL_DELAY + random.uniform(0.1, 0.4))
                 return BeautifulSoup(resp.text, "html.parser")
 
             logger.warning(f"GET {url} -> {resp.status_code}")
-            if resp.status_code in (403, 429) and attempt <= max_retries:
-                ra = resp.headers.get("Retry-After")
-                sleep_s = float(ra) if ra and ra.isdigit() else 3.0
-                logger.warning(f"{resp.status_code} received, sleep {sleep_s}s then retry")
-                time.sleep(sleep_s)
-                continue
-
+            
+            # Handle rate limits with exponential backoff
+            if resp.status_code in (403, 429, 503):
+                if attempt <= max_retries:
+                    ra = resp.headers.get("Retry-After")
+                    if ra and ra.isdigit():
+                        sleep_s = float(ra)
+                    else:
+                        # Exponential backoff: 3s, 6s, 12s, 24s
+                        sleep_s = 3.0 * (2 ** (attempt - 1))
+                    
+                    logger.warning(f"{resp.status_code} received, sleep {sleep_s}s then retry (attempt {attempt}/{max_retries})")
+                    time.sleep(sleep_s)
+                    continue
+                else:
+                    logger.error(f"Max retries exceeded for {url}")
+                    break
+            
+            # For other errors, try ScrapingBee immediately
             bee = _fetch_with_scrapingbee(url, render_js=bool(render_js))
             if bee:
                 return bee
             return None
+            
         except Exception as e:
             logger.error(f"fetch_url error {url}: {e}")
-            bee = _fetch_with_scrapingbee(url, render_js=bool(render_js))
-            return bee
+            if attempt <= max_retries:
+                continue
+            else:
+                # Final attempt with ScrapingBee
+                bee = _fetch_with_scrapingbee(url, render_js=bool(render_js))
+                return bee
+    
+    # If all retries failed, try ScrapingBee as last resort
+    logger.info(f"All direct attempts failed for {url}, trying ScrapingBee")
+    bee = _fetch_with_scrapingbee(url, render_js=bool(render_js))
+    return bee
 
 # -------- generic helpers --------
 
