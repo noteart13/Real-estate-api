@@ -81,10 +81,10 @@ spec:
         resources:
           requests:
             cpu: "500m"
-            memory: "1Gi"
+            memory: "3Gi"
           limits:
             cpu: "2"
-            memory: "4Gi"
+            memory: "8Gi"
         readinessProbe:
           httpGet:
             path: /debug/config   # bạn đang có endpoint này 200 OK trong log
