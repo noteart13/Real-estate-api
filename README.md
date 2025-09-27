@@ -55,6 +55,35 @@ Notes:
 - You can also pass a direct listing URL as the `address` to skip search.
 - `include_embeddings=false` speeds up responses for quick checks.
 
+### Environment variables (.env)
+Tạo file `.env` ở thư mục gốc với nội dung ví dụ:
+```ini
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_DB=0
+CACHE_TTL=172800
+
+# Scraping
+USER_AGENT=Mozilla/5.0 (compatible; PropertyScraper/1.0)
+REQUEST_TIMEOUT=60
+RESPECT_ROBOTS_TXT=0
+CRAWL_DELAY=1
+
+# Fallback provider (bạn cung cấp key ở đây)
+SCRAPINGBEE_API_KEY=M1XFCD1X0LVQJHIXT6BBFZGWFTSSFEQDF8CDGZDKUX0QVPPU5Y1TZOAD6HSHRA95BIGPBZE7T2G0JDZD
+```
+
+Khi chạy Docker, có thể truyền trực tiếp:
+```powershell
+docker run --rm -p 8000:8000 `
+  -e REDIS_HOST=host.docker.internal `
+  -e SCRAPINGBEE_API_KEY="M1XFCD1X0LVQJHIXT6BBFZGWFTSSFEQDF8CDGZDKUX0QVPPU5Y1TZOAD6HSHRA95BIGPBZE7T2G0JDZD" `
+  -e RESPECT_ROBOTS_TXT=0 `
+  -e REQUEST_TIMEOUT=90 `
+  --name property-api property-api:local `
+  uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
+```
+
 ---
 
 ## Troubleshooting
