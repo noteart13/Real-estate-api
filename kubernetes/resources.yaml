@@ -49,12 +49,12 @@ spec:
       labels:
         app: property-api
     spec:
-      # Nếu cần pull image từ GAR bằng imagePullSecret, uncomment block dưới và tạo secret trước
-      # imagePullSecrets:
-      # - name: gar-pull
+      # Pull image from Google Artifact Registry using imagePullSecret
+      imagePullSecrets:
+      - name: gar-pull-secret
       containers:
       - name: property-api
-        image: australia-southeast1-docker.pkg.dev/aagi-raw-band-downloader/property-repo/property-api:v1.0.3
+        image: australia-southeast1-docker.pkg.dev/realestate-clip-api/realestate-clip-repo/realestate-clip-api:latest
         imagePullPolicy: Always
         ports:
           - name: http

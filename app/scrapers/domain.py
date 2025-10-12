@@ -85,25 +85,90 @@ def scrape_domain(url: str) -> Optional[Dict[str, Any]]:
             item["address"] = clean_text(h1.get_text(" ", strip=True))
 
     if not item.get("price"):
-        summary = soup.select_one('div[data-testid="listing-details__summary-title"]')
-        if summary:
-            item["price"] = clean_price(summary.get_text(" ", strip=True))
+        # Try multiple selectors for price
+        price_selectors = [
+            'div[data-testid="listing-details__summary-title"]',
+            '.css-1texeil',  # Price display class
+            '[data-testid="price"]',
+            '.listing-details__summary-title',
+            'h1[data-testid="listing-details__summary-title"]'
+        ]
+        
+        for selector in price_selectors:
+            price_elem = soup.select_one(selector)
+            if price_elem:
+                price_text = clean_price(price_elem.get_text(" ", strip=True))
+                if price_text and price_text != "Contact agent":
+                    item["price"] = price_text
+                    break
+        
+        # If still no price, try to find "Offers Above" text
+        if not item.get("price"):
+            offers_text = soup.find(text=re.compile(r"Offers Above", re.I))
+            if offers_text:
+                parent = offers_text.parent
+                if parent:
+                    item["price"] = clean_price(parent.get_text(" ", strip=True))
 
     if not item.get("description"):
-        meta = soup.select_one("meta[name='description']") or soup.select_one("meta[property='og:description']")
-        if meta and meta.get("content"):
-            item["description"] = clean_text(meta["content"])
+        # Try multiple selectors for description
+        desc_selectors = [
+            "meta[name='description']",
+            "meta[property='og:description']",
+            '[data-testid="listing-summary__description"]',
+            '.listing-summary__description',
+            '.property-description',
+            '.description'
+        ]
+        
+        for selector in desc_selectors:
+            desc_elem = soup.select_one(selector)
+            if desc_elem:
+                if desc_elem.name == 'meta':
+                    desc_text = desc_elem.get("content", "")
+                else:
+                    desc_text = desc_elem.get_text(" ", strip=True)
+                
+                if desc_text and len(desc_text) > 20:  # Avoid short descriptions
+                    item["description"] = clean_text(desc_text)
+                    break
 
     if not item.get("image_urls"):
         item["image_urls"] = extract_images_generic(soup)
     item["image_urls"] = filter_photo_urls(item.get("image_urls", []))[:40]
 
-    # Features
+    # Features - improved extraction
     feats = []
-    for el in soup.select("div[data-testid='listing-details__features'] li"):
-        t = clean_text(el.get_text(" ", strip=True))
-        if t: feats.append(t)
-    if feats: item["features"] = feats[:50]
+    feature_selectors = [
+        "div[data-testid='listing-details__features'] li",
+        ".property-features li",
+        ".features li",
+        "[data-testid*='feature'] li",
+        ".listing-features li"
+    ]
+    
+    for selector in feature_selectors:
+        for el in soup.select(selector):
+            t = clean_text(el.get_text(" ", strip=True))
+            if t and len(t) > 2 and t not in feats:
+                feats.append(t)
+        if feats:
+            break
+    
+    # Also try to extract from text patterns
+    if not feats:
+        page_text = soup.get_text()
+        common_features = [
+            "Air conditioning", "Built in wardrobes", "Internal Laundry", 
+            "Secure Parking", "Dishwasher", "Solar panels", "Pets Allowed",
+            "Swimming Pool", "Garden", "Balcony", "Study", "Ensuite"
+        ]
+        for feature in common_features:
+            if feature.lower() in page_text.lower():
+                feats.append(feature)
+    
+    if feats: 
+        item["features"] = feats[:50]
 
     # Floorplan
     # Domain thường có link riêng
@@ -143,8 +208,10 @@ def scrape_domain(url: str) -> Optional[Dict[str, Any]]:
                 item["agent_phone"] = clean_text(phone_text)
                 break
 
-    # Inspections - improved extraction
+    # Inspections - improved extraction with deduplication
     times = []
+    seen_times = set()
+    
     # Try multiple selectors for inspection times
     inspection_selectors = [
         "div[data-testid='inspection-times'] time",
@@ -158,17 +225,72 @@ def scrape_domain(url: str) -> Optional[Dict[str, Any]]:
     for selector in inspection_selectors:
         for tim in soup.select(selector):
             if tim.get("datetime"):
-                times.append(tim["datetime"])
+                time_str = tim["datetime"]
+                if time_str not in seen_times:
+                    times.append(time_str)
+                    seen_times.add(time_str)
             elif tim.get_text(strip=True):
                 # Extract text content if no datetime attribute
                 text = clean_text(tim.get_text(strip=True))
                 if text and ("am" in text.lower() or "pm" in text.lower() or ":" in text):
-                    times.append(text)
+                    # Clean up the text to avoid duplicates
+                    clean_text_time = re.sub(r'\s+', ' ', text).strip()
+                    if clean_text_time not in seen_times and len(clean_text_time) < 100:
+                        times.append(clean_text_time)
+                        seen_times.add(clean_text_time)
         if times:
             break
     
+    # If no structured times found, try to extract from page text
+    if not times:
+        page_text = soup.get_text()
+        # Look for time patterns like "Thursday, 16 Oct 4:45pm - 5:15pm"
+        time_patterns = [
+            r'([A-Za-z]+day,?\s+\d+\s+[A-Za-z]+\s+\d+:\d+[ap]m\s*-\s*\d+:\d+[ap]m)',
+            r'([A-Za-z]+day,?\s+\d+\s+[A-Za-z]+\s+\d+:\d+[ap]m)',
+            r'(\d+:\d+[ap]m\s*-\s*\d+:\d+[ap]m)',
+            r'(\d+:\d+[ap]m)'
+        ]
+        
+        for pattern in time_patterns:
+            matches = re.findall(pattern, page_text, re.I)
+            for match in matches:
+                clean_match = re.sub(r'\s+', ' ', match).strip()
+                if clean_match not in seen_times and len(clean_match) < 50:
+                    times.append(clean_match)
+                    seen_times.add(clean_match)
+    
     if times: 
         item["inspection_times"] = times[:10]  # Limit to 10 inspection times
+
+    # --- Property Type (if not already extracted) ---
+    if not item.get("property_type") or item.get("property_type") == "Event":
+        # Try to extract property type from HTML
+        type_selectors = [
+            '[data-testid="listing-summary__property-type"]',
+            '.listing-summary__property-type',
+            '.property-type',
+            'h1[data-testid="address"] + div',
+            '.css-1texeil + div'
+        ]
+        
+        for selector in type_selectors:
+            type_elem = soup.select_one(selector)
+            if type_elem:
+                type_text = type_elem.get_text(" ", strip=True).lower()
+                if any(word in type_text for word in ['townhouse', 'house', 'apartment', 'unit', 'villa', 'duplex']):
+                    item["property_type"] = type_text.title()
+                    break
+        
+        # Fallback: look for property type in text
+        if not item.get("property_type") or item.get("property_type") == "Event":
+            page_text = soup.get_text().lower()
+            if 'townhouse' in page_text:
+                item["property_type"] = "Townhouse"
+            elif 'house' in page_text:
+                item["property_type"] = "House"
+            elif 'apartment' in page_text:
+                item["property_type"] = "Apartment"
 
     # --- Heuristics: bedrooms/bathrooms/parking via embedded JSON or visible text ---
     if not (item.get("bedrooms") and item.get("bathrooms") and item.get("parking")):

@@ -203,6 +203,11 @@ GET /healthz
 GET /debug/config
 ```
 
+### Cache Statistics
+```http
+GET /debug/cache
+```
+
 ## 🔧 Configuration
 
 ### Environment Variables
@@ -268,6 +273,12 @@ python -m pytest tests/
 
 # Run with coverage
 python -m pytest tests/ --cov=app
+
+# Run specific test file
+python -m pytest tests/test_api.py -v
+
+# Run with detailed output
+python -m pytest tests/ -v --tb=short
 ```
 
 ## 🚨 Troubleshooting

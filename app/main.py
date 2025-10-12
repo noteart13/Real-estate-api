@@ -105,30 +105,40 @@ async def search_property(
     address: Optional[str] = Query(None, description="Full address or direct listing URL (query)"),
     body: Optional[SearchRequest] = Body(None, description="You can also send JSON body")
 ):
-    # Hợp nhất nguồn input
-    if body and body.address:
-        addr = body.address.strip()
-        include_embeddings = body.include_embeddings
-        max_images = body.max_images or _MAX_IMAGES_DEFAULT
-    elif address:
-        addr = address.strip()
-        include_embeddings = True
-        max_images = _MAX_IMAGES_DEFAULT
-    else:
-        raise HTTPException(status_code=400, detail="Address is required")
-
-    # Cache theo địa chỉ (có thể mở rộng key theo include_embeddings/max_images nếu cần)
-    cached = get_from_cache(addr)
-    if cached is not None and include_embeddings:   # chỉ trả cache khi có embed sẵn
-        return {"properties": [Property(**_normalize_payload(p)) for p in cached]}
-
     try:
+        # Hợp nhất nguồn input
+        if body and body.address:
+            addr = body.address.strip()
+            include_embeddings = body.include_embeddings
+            max_images = body.max_images or _MAX_IMAGES_DEFAULT
+        elif address:
+            addr = address.strip()
+            include_embeddings = True
+            max_images = _MAX_IMAGES_DEFAULT
+        else:
+            raise HTTPException(status_code=400, detail="Address is required")
+
+        # Validate input
+        if not addr or len(addr) < 5:
+            raise HTTPException(status_code=400, detail="Address must be at least 5 characters long")
+        
+        if max_images < 1 or max_images > 50:
+            raise HTTPException(status_code=400, detail="max_images must be between 1 and 50")
+
+        # Cache theo địa chỉ (có thể mở rộng key theo include_embeddings/max_images nếu cần)
+        cached = get_from_cache(addr)
+        if cached is not None and include_embeddings:   # chỉ trả cache khi có embed sẵn
+            return {"properties": [Property(**_normalize_payload(p)) for p in cached]}
+
         props = await _discover_and_scrape(addr, include_embeddings, max_images)
         if props and include_embeddings:
             set_to_cache(addr, props)
         return {"properties": [Property(**p) for p in props]}
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
     except Exception as e:
-        logger.error(f"Search failed: {e}", exc_info=True)
+        logger.error(f"Search failed for address '{addr}': {e}", exc_info=True)
         return {"properties": []}
 
 @app.get("/")
@@ -149,4 +159,15 @@ def debug_config():
         "redis": {"host": cfg.REDIS_HOST, "port": cfg.REDIS_PORT, "db": cfg.REDIS_DB},
         "clip": {"model": cfg.CLIP_MODEL, "device": cfg.CLIP_DEVICE},
         "http": {"timeout": cfg.REQUEST_TIMEOUT, "ua": cfg.USER_AGENT[:60]},
+    }
+
+@app.get("/debug/cache")
+def debug_cache():
+    """Get cache statistics and health"""
+    from app.cache import cache_stats
+    stats = cache_stats()
+    return {
+        "status": "ok" if stats else "error",
+        "stats": stats,
+        "cache_ttl": config.CACHE_TTL
     }
