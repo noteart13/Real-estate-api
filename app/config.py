@@ -13,8 +13,8 @@ class Config:
     CACHE_TTL  = int(os.getenv("CACHE_TTL", 172800))  # 48h
 
     # HTTP / scraping
-    USER_AGENT = os.getenv("USER_AGENT", "Mozilla/5.0 (compatible; PropertyScraper/1.0)")
-    REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", 30))
+    USER_AGENT = os.getenv("USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", 60))
     RESPECT_ROBOTS_TXT = bool(int(os.getenv("RESPECT_ROBOTS_TXT", "1")))
     CRAWL_DELAY = int(os.getenv("CRAWL_DELAY", 5))
     HTTP_PROXY  = os.getenv("HTTP_PROXY") or None

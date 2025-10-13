@@ -69,24 +69,11 @@ brew install redis && brew services start redis
 sudo apt install redis-server && sudo systemctl start redis
 
 # Windows
-# Download from https://github.com/microsoftarchive/redis
+# Download from https://github.com/tporadowski/redis/releases
 ```
 
 3. **Configure Environment**
-```bash
-# Create .env file
-cat > .env << EOF
-REDIS_HOST=localhost
-REDIS_PORT=6379
-REDIS_DB=0
-CACHE_TTL=172800
-USER_AGENT=Mozilla/5.0 (compatible; PropertyScraper/1.0)
-REQUEST_TIMEOUT=60
-RESPECT_ROBOTS_TXT=0
-CRAWL_DELAY=1
-SCRAPINGBEE_API_KEY=your_api_key_here
-EOF
-```
+
 
 4. **Run the Application**
 ```bash

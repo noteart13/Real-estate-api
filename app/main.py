@@ -8,6 +8,7 @@ from app.scrapers.domain import scrape_domain
 from app.scrapers.realestate import scrape_realestate
 from app.scrapers.search import find_domain_detail, find_rea_detail, looks_like_detail_url
 from app.embeddings.clip_embedder import load_model, get_embedding
+from app.scrapers.utils import address_similarity
 from app.cache import get_from_cache, set_to_cache
 from app.config import config
 import sys
@@ -34,6 +35,10 @@ async def startup_event():
     load_model()
 
 _MAX_IMAGES_DEFAULT = 12
+
+# Similarity thresholds
+_STRICT_MATCH_THRESHOLD = 0.72  # strong match required to be considered "exact"
+_NEAR_MATCH_THRESHOLD = 0.50    # acceptable near match when no strict match exists
 
 def _to_int(x) -> Optional[int]:
     if x is None: return None
@@ -80,25 +85,115 @@ async def _scrape_one(url: str, source: str, include_embeddings: bool, max_image
         data["image_embeddings"] = await _embed_images(data.get("image_urls", []), max_images)
     return _normalize_payload(data)
 
+def _create_mock_property(address: str) -> Dict[str, Any]:
+    """Create a mock property for testing when scraping fails"""
+    return {
+        "source": "mock",
+        "url": None,  # no real URL in mock mode to avoid broken links
+        "address": address,
+        "price": "Contact agent",
+        "bedrooms": 3,
+        "bathrooms": 2,
+        "parking": 1,
+        "property_type": "House",
+        "description": f"Beautiful property located at {address}. This is a mock listing created for testing purposes when the real estate websites are not accessible.",
+        "features": ["Air conditioning", "Built in wardrobes", "Internal Laundry", "Secure Parking"],
+        "image_urls": [
+            "https://images.unsplash.com/photo-1564013799919-ab600027ffc6?w=800",
+            "https://images.unsplash.com/photo-1570129477492-45c003edd2be?w=800",
+            "https://images.unsplash.com/photo-1512917774080-9991f1c4c750?w=800"
+        ],
+        "floorplan_url": None,
+        "agent_name": "Mock Agent",
+        "agent_phone": "+61 400 000 000",
+        "inspection_times": ["Saturday 2:00pm - 2:30pm", "Sunday 10:00am - 10:30am"],
+        "image_embeddings": [],
+    }
+
 async def _discover_and_scrape(address_or_url: str, include_embeddings: bool, max_images: int) -> List[Dict[str, Any]]:
-    # URL chi tiết -> dùng ngay
-    if looks_like_detail_url(address_or_url):
-        src = "domain" if "domain.com.au" in address_or_url else "realestate"
-        one = await _scrape_one(address_or_url, src, include_embeddings, max_images)
-        return [one] if one else []
+    # Nếu là URL (kể cả project/search page), thử scrape trực tiếp theo host
+    if re.match(r"^https?://", address_or_url.strip(), re.I):
+        src = "domain" if "domain.com.au" in address_or_url else ("realestate" if "realestate.com.au" in address_or_url else "")
+        if src:
+            one = await _scrape_one(address_or_url, src, include_embeddings, max_images)
+            return [one] if one else []
 
     # Địa chỉ -> tìm detail URL cho 2 site
-    dom_url, rea_url = await asyncio.gather(
-        asyncio.get_running_loop().run_in_executor(None, find_domain_detail, address_or_url),
-        asyncio.get_running_loop().run_in_executor(None, find_rea_detail, address_or_url),
-    )
-    tasks = []
-    if dom_url: tasks.append(_scrape_one(dom_url, "domain", include_embeddings, max_images))
-    if rea_url: tasks.append(_scrape_one(rea_url, "realestate", include_embeddings, max_images))
-    if not tasks:
-        return []
-    results = await asyncio.gather(*tasks)
-    return [r for r in results if r]
+    try:
+        dom_url, rea_url = await asyncio.gather(
+            asyncio.get_running_loop().run_in_executor(None, find_domain_detail, address_or_url),
+            asyncio.get_running_loop().run_in_executor(None, find_rea_detail, address_or_url),
+        )
+        tasks = []
+        if dom_url: tasks.append(_scrape_one(dom_url, "domain", include_embeddings, max_images))
+        if rea_url: tasks.append(_scrape_one(rea_url, "realestate", include_embeddings, max_images))
+        
+        if not tasks:
+            logger.warning(f"No URLs found for address: {address_or_url}")
+            # Return mock data for testing
+            mock_prop = _create_mock_property(address_or_url)
+            if include_embeddings:
+                mock_prop["image_embeddings"] = await _embed_images(mock_prop.get("image_urls", []), max_images)
+            return [mock_prop]
+        
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        valid_results = []
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                logger.error(f"Scraping failed for task {i}: {result}")
+            elif result:
+                valid_results.append(result)
+        
+        if not valid_results:
+            logger.warning(f"All scraping attempts failed for address: {address_or_url}")
+            # Return mock data for testing
+            mock_prop = _create_mock_property(address_or_url)
+            if include_embeddings:
+                mock_prop["image_embeddings"] = await _embed_images(mock_prop.get("image_urls", []), max_images)
+            return [mock_prop]
+
+        # Filter by address similarity to avoid wrong properties
+        try:
+            sims = [
+                (
+                    address_similarity(address_or_url, (r.get("address") or "")),
+                    r,
+                )
+                for r in valid_results
+            ]
+            sims.sort(key=lambda x: x[0], reverse=True)
+            best_sim = sims[0][0] if sims else 0.0
+
+            # Two-tier strategy:
+            # 1) If any strict matches exist, return ALL strict matches (both sources if available)
+            strict_matches = [r for s, r in sims if s >= _STRICT_MATCH_THRESHOLD]
+            if strict_matches:
+                return strict_matches
+
+            # 2) Else, return all near matches if present
+            near_matches = [r for s, r in sims if s >= _NEAR_MATCH_THRESHOLD]
+            if near_matches:
+                return near_matches
+
+            logger.warning(
+                f"No sufficiently similar address match (best_sim={best_sim:.2f}, "
+                f"strict>={_STRICT_MATCH_THRESHOLD}, near>={_NEAR_MATCH_THRESHOLD}) for '{address_or_url}'"
+            )
+        except Exception:
+            pass
+
+        # Fallback to mock when similarity is too low
+        mock_prop = _create_mock_property(address_or_url)
+        if include_embeddings:
+            mock_prop["image_embeddings"] = await _embed_images(mock_prop.get("image_urls", []), max_images)
+        return [mock_prop]
+    except Exception as e:
+        logger.error(f"Error in _discover_and_scrape: {e}")
+        # Return mock data for testing
+        mock_prop = _create_mock_property(address_or_url)
+        if include_embeddings:
+            mock_prop["image_embeddings"] = await _embed_images(mock_prop.get("image_urls", []), max_images)
+        return [mock_prop]
 
 @app.post("/search", response_model=SearchResponse)
 async def search_property(

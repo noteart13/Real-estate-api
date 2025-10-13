@@ -30,18 +30,43 @@ def _parse_loc(address: str):
 
 def _domain_search_url(address: str) -> str:
     suburb, state, pc, _ = _parse_loc(address)
-    return f"https://www.domain.com.au/sale/{suburb}-{state}-{pc}/" if state and pc else f"https://www.domain.com.au/sale/{suburb}/"
+    if state and pc:
+        return f"https://www.domain.com.au/sale/{suburb}-{state}-{pc}/"
+    elif suburb:
+        return f"https://www.domain.com.au/sale/{suburb}/"
+    else:
+        # Fallback to a general search
+        clean_addr = re.sub(r'[^\w\s-]', '', address.lower()).strip()
+        clean_addr = re.sub(r'\s+', '-', clean_addr)
+        return f"https://www.domain.com.au/sale/{clean_addr}/"
 
 def _rea_search_url(address: str) -> str:
     """Chỉ dùng 'suburb, STATE PC' (không dùng cả street)."""
     suburb, state, pc, suburb_q = _parse_loc(address)
-    q = suburb_q if not (state and pc) else f"{suburb_q}, {state.upper()} {pc}"
+    if state and pc:
+        q = f"{suburb_q}, {state.upper()} {pc}"
+    elif suburb_q:
+        q = suburb_q
+    else:
+        # Fallback to a general search
+        q = address.strip()
     return f"https://www.realestate.com.au/buy/in-{quote_plus(q)}/list-1"
 
 def _normalize_address_variants(address: str) -> list[str]:
     s = re.sub(r"\s+", " ", address.strip())
     s = re.sub(r"\b0+(\d+)(?=/)", r"\1", s)  # Loại 0 thừa trước unit
+    # Base variants
     variants = {s, s.replace("/", " ")}
+    # Remove commas for search engines and add lowercase variant
+    variants.add(re.sub(r",", "", s))
+    variants.add(s.lower())
+    # If looks like Lot address, add targeted variants to improve hit rate
+    if re.search(r"\blot\s+\d+", s, re.I):
+        lot_norm = re.sub(r",", "", s)
+        lot_norm = re.sub(r"\blot\s+(\d+)", r"Lot \1", lot_norm, flags=re.I)
+        variants.add(lot_norm)
+        # also without postcode
+        variants.add(re.sub(r"\s+\d{4}\b", "", lot_norm))
     m = re.match(r"(\d+)[/\\-](\d+)\s+(.*)", s)
     if m:
         unit, num, rest = m.groups()
@@ -60,17 +85,17 @@ def _ddg_candidates(query: str, pattern: re.Pattern, max_results: int = 8, retri
     out, last_err = [], None
     
     # Reduce max_results to avoid rate limits
-    max_results = min(max_results, 5)
+    max_results = min(max_results, 3)  # Further reduced to avoid rate limits
     
     for i in range(retries):
         try:
             # Add random delay before each attempt
             if i > 0:
-                delay = random.uniform(1.0, 3.0)
+                delay = random.uniform(2.0, 5.0)  # Increased delay
                 logger.info(f"DDG retry {i+1}, waiting {delay:.1f}s")
                 time.sleep(delay)
             
-            with DDGS(timeout=20) as ddgs:
+            with DDGS(timeout=30) as ddgs:  # Increased timeout
                 results = list(ddgs.text(query, max_results=max_results))
                 
                 for r in results:
@@ -85,7 +110,7 @@ def _ddg_candidates(query: str, pattern: re.Pattern, max_results: int = 8, retri
                     
         except RatelimitException as e:
             last_err = e
-            sleep = (backoff ** i) + random.uniform(1.0, 2.0)
+            sleep = (backoff ** i) + random.uniform(2.0, 5.0)  # Increased sleep time
             logger.warning(f"DDG ratelimit, sleep {sleep:.1f}s")
             time.sleep(sleep)
         except Exception as e:
@@ -94,7 +119,7 @@ def _ddg_candidates(query: str, pattern: re.Pattern, max_results: int = 8, retri
             # For non-rate-limit errors, don't retry immediately
             if "202" not in str(e):
                 break
-            time.sleep(random.uniform(2.0, 4.0))
+            time.sleep(random.uniform(3.0, 6.0))  # Increased sleep time
     
     if last_err and not out:
         logger.warning(f"DDG candidates failed: {last_err}")
@@ -194,7 +219,7 @@ def find_domain_detail(address: str) -> str | None:
     
     # Only try DDG if we haven't found anything yet
     if not candidates:
-        variants = _normalize_address_variants(address)[:1]  # Only try first variant
+        variants = _normalize_address_variants(address)[:4]  # Try a few variants, helps with Lot addresses
         for v in variants:
             candidates += _ddg_candidates(f'site:domain.com.au "{v}"', RE_DOMAIN_DETAIL, max_results=3)
     
@@ -221,7 +246,7 @@ def find_rea_detail(address: str) -> str | None:
     
     # Only try DDG if we haven't found anything yet
     if not candidates:
-        variants = _normalize_address_variants(address)[:1]  # Only try first variant
+        variants = _normalize_address_variants(address)[:4]  # Try a few variants
         for v in variants:
             candidates += _ddg_candidates(f'site:realestate.com.au "{v}"', RE_REA_DETAIL, max_results=3)
     
