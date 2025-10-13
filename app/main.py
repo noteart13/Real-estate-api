@@ -110,7 +110,7 @@ def _create_mock_property(address: str) -> Dict[str, Any]:
         "image_embeddings": [],
     }
 
-async def _discover_and_scrape(address_or_url: str, include_embeddings: bool, max_images: int) -> List[Dict[str, Any]]:
+async def _discover_and_scrape(address_or_url: str, include_embeddings: bool, max_images: int, *, strict_match: bool = False, allow_near: bool = True) -> List[Dict[str, Any]]:
     # Nếu là URL (kể cả project/search page), thử scrape trực tiếp theo host
     if re.match(r"^https?://", address_or_url.strip(), re.I):
         src = "domain" if "domain.com.au" in address_or_url else ("realestate" if "realestate.com.au" in address_or_url else "")
@@ -170,10 +170,11 @@ async def _discover_and_scrape(address_or_url: str, include_embeddings: bool, ma
             if strict_matches:
                 return strict_matches
 
-            # 2) Else, return all near matches if present
-            near_matches = [r for s, r in sims if s >= _NEAR_MATCH_THRESHOLD]
-            if near_matches:
-                return near_matches
+            # 2) Else, return all near matches if present (only if allowed)
+            if allow_near and not strict_match:
+                near_matches = [r for s, r in sims if s >= _NEAR_MATCH_THRESHOLD]
+                if near_matches:
+                    return near_matches
 
             logger.warning(
                 f"No sufficiently similar address match (best_sim={best_sim:.2f}, "
@@ -206,10 +207,14 @@ async def search_property(
             addr = body.address.strip()
             include_embeddings = body.include_embeddings
             max_images = body.max_images or _MAX_IMAGES_DEFAULT
+            strict_match = getattr(body, "strict_match", False)
+            allow_near = getattr(body, "allow_near", True)
         elif address:
             addr = address.strip()
             include_embeddings = True
             max_images = _MAX_IMAGES_DEFAULT
+            strict_match = False
+            allow_near = True
         else:
             raise HTTPException(status_code=400, detail="Address is required")
 
@@ -225,7 +230,7 @@ async def search_property(
         if cached is not None and include_embeddings:   # chỉ trả cache khi có embed sẵn
             return {"properties": [Property(**_normalize_payload(p)) for p in cached]}
 
-        props = await _discover_and_scrape(addr, include_embeddings, max_images)
+        props = await _discover_and_scrape(addr, include_embeddings, max_images, strict_match=strict_match, allow_near=allow_near)
         if props and include_embeddings:
             set_to_cache(addr, props)
         return {"properties": [Property(**p) for p in props]}

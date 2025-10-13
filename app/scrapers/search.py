@@ -132,18 +132,28 @@ def _ddg_candidates(query: str, pattern: re.Pattern, max_results: int = 8, retri
     return uniq
 
 def _bing_first(address: str, pattern: re.Pattern, site_host: str) -> str | None:
-    for v in _normalize_address_variants(address):
-        q = f'site:{site_host} "{v}"'
-        url = f"https://www.bing.com/search?q={quote_plus(q)}&count=10"
-        soup = fetch_url(url, ignore_robots=True, max_retries=1, render_js=True)
-        if not soup:
-            continue
-        for css in ["li.b_algo h2 a", "h2 a", "a[href]"]:
-            for a in soup.select(css):
-                href = a.get("href") or ""
-                if href and pattern.search(href):
-                    logger.info(f"Bing hit for '{v}': {href}")
-                    return href.split("?")[0]
+    """Find first matching URL via Bing with AU market hints and multiple query forms."""
+    variants = _normalize_address_variants(address)[:5]
+    query_forms = [
+        'site:{host} "{v}"',
+        'site:{host} {v}',
+        'site:{host} lot {v}',
+    ]
+    for v in variants:
+        for form in query_forms:
+            q = form.format(host=site_host, v=v)
+            url = (
+                f"https://www.bing.com/search?q={quote_plus(q)}&count=10&setlang=en-au&cc=AU&mkt=en-AU"
+            )
+            soup = fetch_url(url, ignore_robots=True, max_retries=1, render_js=True)
+            if not soup:
+                continue
+            for css in ["li.b_algo h2 a", "ol#b_results h2 a", "h2 a", "a[href]"]:
+                for a in soup.select(css):
+                    href = a.get("href") or ""
+                    if href and pattern.search(href):
+                        logger.info(f"Bing hit for '{v}': {href}")
+                        return href.split("?")[0]
     return None
 
 def _find_any_property_url_in_html(html: str, base: str, site: str) -> str | None:

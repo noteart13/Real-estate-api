@@ -31,6 +31,9 @@ class SearchRequest(BaseModel):
     address: str
     include_embeddings: bool = True
     max_images: int = 12
+    # Matching controls
+    strict_match: bool = False           # require strict address match when true
+    allow_near: bool = True              # when no strict match, allow near matches
 
 class SearchResponse(BaseModel):
     properties: List[Property]
