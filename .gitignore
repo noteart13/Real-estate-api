@@ -68,3 +68,5 @@ gcp-key.json
 # Artifact Registry credentials
 .dockercfg
 .docker/
+
+DEMO.md

@@ -1,12 +1,11 @@
 # 🏠 Real Estate CLIP API
 
-A production-ready FastAPI service that intelligently searches and analyzes real estate properties using advanced web scraping and AI-powered image embeddings.
+FastAPI service that searches and analyzes real estate properties using web scraping and AI-powered image embeddings.
 
 [![Python](https://img.shields.io/badge/Python-3.11-blue.svg)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.104+-green.svg)](https://fastapi.tiangolo.com)
 [![Docker](https://img.shields.io/badge/Docker-Ready-blue.svg)](https://docker.com)
 [![Kubernetes](https://img.shields.io/badge/Kubernetes-GKE-orange.svg)](https://kubernetes.io)
-[![CLIP](https://img.shields.io/badge/CLIP-ViT--B%2F32-purple.svg)](https://github.com/openai/CLIP)
 
 ## 🚀 Features
 
@@ -20,127 +19,72 @@ A production-ready FastAPI service that intelligently searches and analyzes real
 
 ## 🏗️ Architecture
 
-```mermaid
-graph TB
-    A[Client Request] --> B[FastAPI Server]
-    B --> C[Property Search Engine]
-    C --> D[Domain.com.au Scraper]
-    C --> E[RealEstate.com.au Scraper]
-    D --> F[Data Normalization]
-    E --> F
-    F --> G[CLIP Embedding Engine]
-    G --> H[Redis Cache]
-    H --> I[JSON Response]
-    I --> A
-```
+High-level architecture: Client → FastAPI → Scrapers (Domain/REA) → Normalization → CLIP Embeddings → Redis Cache → JSON Response.
 
 ## 📋 Prerequisites
 
-- **Python 3.11** (required for PyTorch compatibility)
-- **Redis** (for response caching)
-- **Docker** (for containerization)
-- **Google Cloud SDK** (for deployment)
-- **kubectl** (for Kubernetes management)
+- Python 3.11 (required for PyTorch compatibility)
+- Redis (for response caching)
+- Docker (for containerization)
+- Google Cloud SDK (for deployment)
+- kubectl (for Kubernetes management)
 
 ## 🛠️ Quick Start
 
 ### Local Development
-
-1. **Clone and Setup Environment**
 ```bash
+# Clone and setup
 git clone <repository-url>
 cd realestate-clip-api
-
-# Create virtual environment
 python3.11 -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
 
 # Install dependencies
-pip install -U pip
 pip install -r requirements.txt
-```
 
-2. **Start Redis**
-```bash
-# macOS
-brew install redis && brew services start redis
+# Start Redis (required)
+# macOS: brew install redis && brew services start redis
+# Ubuntu: sudo apt install redis-server && sudo systemctl start redis
 
-# Ubuntu/Debian
-sudo apt install redis-server && sudo systemctl start redis
-
-# Windows
-# Download from https://github.com/tporadowski/redis/releases
-```
-
-3. **Configure Environment**
-
-
-4. **Run the Application**
-```bash
+# Run API
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-5. **Access the API**
-- **API Documentation**: http://localhost:8000/docs
-- **Health Check**: http://localhost:8000/healthz
-- **Root Endpoint**: http://localhost:8000/
+**Access**: http://localhost:8000/docs
 
-## 🐳 Docker Deployment
-
-### Build and Run Locally
+### Docker Deployment
 ```bash
-# Build the image
+# Build and run
 docker build -t realestate-clip-api:latest .
-
-# Run with environment variables
 docker run --rm -p 8000:8000 \
   -e REDIS_HOST=host.docker.internal \
-  -e SCRAPINGBEE_API_KEY="your_api_key" \
+  -e SCRAPINGBEE_API_KEY="YOUR_KEY" \
   -e RESPECT_ROBOTS_TXT=0 \
-  -e REQUEST_TIMEOUT=90 \
   --name realestate-api \
   realestate-clip-api:latest
 ```
 
-### Google Cloud Artifact Registry
+### Google Cloud Deployment
 ```bash
-# Configure Docker authentication
+# Quick deployment (see DEMO.md for detailed steps)
+gcloud auth login
+gcloud config set project PROJECT_ID
+gcloud services enable artifactregistry.googleapis.com
+gcloud artifacts repositories create property-repo --repository-format=docker --location=australia-southeast1
 gcloud auth configure-docker australia-southeast1-docker.pkg.dev
 
 # Build and push
-docker build -t australia-southeast1-docker.pkg.dev/PROJECT_ID/REPO_NAME/IMAGE_NAME:TAG .
-docker push australia-southeast1-docker.pkg.dev/PROJECT_ID/REPO_NAME/IMAGE_NAME:TAG
-```
+docker build -t realestate-clip-api:latest .
+docker tag realestate-clip-api:latest australia-southeast1-docker.pkg.dev/PROJECT_ID/property-repo/realestate-clip-api:latest
+docker push australia-southeast1-docker.pkg.dev/PROJECT_ID/property-repo/realestate-clip-api:latest
 
-## ☸️ Kubernetes Deployment
-
-### Prerequisites
-- GKE cluster running
-- kubectl configured
-- Docker images pushed to Artifact Registry
-
-### Deploy to GKE
-```bash
-# Apply Kubernetes manifests
+# Deploy to GKE
+gcloud container clusters get-credentials CLUSTER_NAME --region=australia-southeast1 --project=PROJECT_ID
 kubectl apply -f kubernetes/resources.yaml
-
-# Check deployment status
-kubectl get pods -n property-ns
-kubectl get services -n property-ns
-
-# Get external IP
 kubectl get service property-service -n property-ns
 ```
 
-### Production Configuration
-The Kubernetes deployment includes:
-- **Horizontal Pod Autoscaler** (HPA) for automatic scaling
-- **Pod Disruption Budget** (PDB) for high availability
-- **Redis** with persistent storage
-- **ConfigMaps** and **Secrets** for configuration management
-- **LoadBalancer** service for external access
-
-## 📚 API Reference
+## 📚 API Usage
 
 ### Search Properties
 ```http
@@ -149,216 +93,57 @@ Content-Type: application/json
 
 {
   "address": "107/131 Sir Fred Schonell Drive, St Lucia, Qld 4067",
-  "include_embeddings": true,
-  "max_images": 12
+  "include_embeddings": false,
+  "max_images": 12,
+  "strict_match": false,
+  "allow_near": true
 }
 ```
 
-**Response:**
-```json
-{
-  "properties": [
-    {
-      "source": "domain",
-      "url": "https://www.domain.com.au/property-url",
-      "address": "107/131 Sir Fred Schonell Drive, St Lucia, Qld 4067",
-      "price": "Contact agent",
-      "bedrooms": 4,
-      "bathrooms": 3,
-      "parking": 2,
-      "property_type": "Apartment",
-      "description": "Modern apartment with city views",
-      "features": ["Air conditioning", "Balcony", "Pool"],
-      "image_urls": ["https://example.com/image1.jpg"],
-      "image_embeddings": [[0.1, 0.2, ...]], // 512-dimensional vectors
-      "floorplan_url": "https://example.com/floorplan.pdf",
-      "agent_name": "John Smith",
-      "agent_phone": "+61 400 000 000",
-      "inspection_times": ["Saturday 2:00 PM"]
-    }
-  ]
-}
-```
-
-### Health Check
-```http
-GET /healthz
-```
-
-### Configuration Debug
-```http
-GET /debug/config
-```
-
-### Cache Statistics
-```http
-GET /debug/cache
-```
+### Other Endpoints
+- **Health**: `GET /healthz`
+- **Config**: `GET /debug/config`
+- **Cache**: `GET /debug/cache`
 
 ## 🔧 Configuration
 
 ### Environment Variables
-
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `REDIS_HOST` | Redis server hostname | `localhost` |
 | `REDIS_PORT` | Redis server port | `6379` |
-| `REDIS_DB` | Redis database number | `0` |
-| `CACHE_TTL` | Cache time-to-live (seconds) | `172800` |
-| `USER_AGENT` | HTTP User-Agent string | `Mozilla/5.0...` |
-| `REQUEST_TIMEOUT` | HTTP request timeout (seconds) | `60` |
+| `REQUEST_TIMEOUT` | HTTP timeout (seconds) | `60` |
 | `RESPECT_ROBOTS_TXT` | Respect robots.txt (0/1) | `1` |
-| `CRAWL_DELAY` | Delay between requests (seconds) | `1` |
-| `SCRAPINGBEE_API_KEY` | ScrapingBee API key for fallback | Required |
+| `SCRAPINGBEE_API_KEY` | ScrapingBee API key | Required |
 
-### Kubernetes Configuration
-
-The application uses ConfigMaps and Secrets for configuration:
-
-```yaml
-# ConfigMap for non-sensitive data
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: property-config
-data:
-  USER_AGENT: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)..."
-  REQUEST_TIMEOUT: "60"
-  RESPECT_ROBOTS_TXT: "0"
-
-# Secret for sensitive data
-apiVersion: v1
-kind: Secret
-metadata:
-  name: property-secrets
-type: Opaque
-stringData:
-  SCRAPINGBEE_API_KEY: "your_api_key_here"
-```
+### Request Parameters
+- `address`: Property address or direct URL
+- `include_embeddings`: Generate CLIP embeddings (true/false)
+- `max_images`: Maximum images to process (1-50)
+- `strict_match`: Require exact address match (true/false)
+- `allow_near`: Allow near matches when no exact match (true/false)
 
 ## 🧪 Testing
 
-### Manual Testing
 ```bash
 # Health check
 curl http://localhost:8000/healthz
 
-# Search properties
+# Search test
 curl -X POST http://localhost:8000/search \
   -H "Content-Type: application/json" \
-  -d '{
-    "address": "36 Fifth Avenue, St Lucia, Qld 4067",
-    "include_embeddings": true,
-    "max_images": 3
-  }'
+  -d '{"address":"3/106 Carmody Road St Lucia QLD 4067","include_embeddings":false,"max_images":12}'
+
+# Run tests
+python -m pytest tests/ -v
 ```
-
-### Automated Testing
-```bash
-# Run test suite
-python -m pytest tests/
-
-# Run with coverage
-python -m pytest tests/ --cov=app
-
-# Run specific test file
-python -m pytest tests/test_api.py -v
-
-# Run with detailed output
-python -m pytest tests/ -v --tb=short
-```
-
-## 🚨 Troubleshooting
-
-### Common Issues
-
-**NumPy/PyTorch Installation Errors**
-```bash
-# Ensure Python 3.11 and upgrade pip
-python --version  # Should be 3.11.x
-pip install -U pip
-pip install -r requirements.txt
-```
-
-**Redis Connection Issues**
-```bash
-# Check Redis status
-redis-cli ping  # Should return PONG
-
-# Check Redis logs
-sudo journalctl -u redis  # On systemd systems
-```
-
-**Docker Build Failures**
-```bash
-# Clear Docker cache
-docker system prune -a
-
-# Rebuild without cache
-docker build --no-cache -t realestate-clip-api:latest .
-```
-
-**Kubernetes Deployment Issues**
-```bash
-# Check pod logs
-kubectl logs -n property-ns -l app=property-api
-
-# Check service status
-kubectl describe service property-service -n property-ns
-
-# Check ingress
-kubectl get ingress -n property-ns
-```
-
-### Performance Optimization
-
-- **Enable Redis caching** for frequently accessed properties
-- **Adjust HPA settings** based on traffic patterns
-- **Use ScrapingBee API** for reliable web scraping
-- **Monitor resource usage** with Kubernetes metrics
-
-## 📈 Monitoring and Observability
-
-### Health Checks
-- **Liveness Probe**: `/debug/config` endpoint
-- **Readiness Probe**: `/debug/config` endpoint
-- **Health Endpoint**: `/healthz`
-
-### Logging
-- Structured logging with timestamps
-- Request/response logging
-- Error tracking with stack traces
-
-### Metrics
-- Response time monitoring
-- Cache hit/miss ratios
-- Scraping success rates
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-- [OpenAI CLIP](https://github.com/openai/CLIP) for the vision-language model
-- [FastAPI](https://fastapi.tiangolo.com) for the web framework
-- [Google Cloud Platform](https://cloud.google.com) for cloud infrastructure
-- [Kubernetes](https://kubernetes.io) for container orchestration
 
 ## 📞 Support
 
-For support and questions:
-- Create an issue in the GitHub repository
-- Check the [API documentation](http://localhost:8000/docs) for endpoint details
-- Review the troubleshooting section above
+- **API Docs**: http://localhost:8000/docs (local) or http://EXTERNAL_IP/docs (deployed)
+- **Detailed Demo**: See [DEMO.md](DEMO.md) for step-by-step deployment guide
+- **Issues**: Create GitHub issue
+- **Health**: http://localhost:8000/healthz
 
 ---
 
