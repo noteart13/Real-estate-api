@@ -54,7 +54,7 @@ spec:
       - name: gar-pull-secret
       containers:
       - name: property-api
-        image: australia-southeast1-docker.pkg.dev/realestate-clip-api/realestate-clip-repo/realestate-clip-api:latest
+        image: australia-southeast1-docker.pkg.dev/aagi-raw-band-downloader/property-repo/realestate-clip-api:latest
         imagePullPolicy: Always
         ports:
           - name: http
