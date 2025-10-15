@@ -18,16 +18,7 @@ data:
   HTTP_PROXY: ""
   HTTPS_PROXY: ""
 ---
-# ---------- Secrets ----------
-apiVersion: v1
-kind: Secret
-metadata:
-  name: property-secrets
-  namespace: property-ns
-type: Opaque
-stringData:
-  SCRAPINGBEE_API_KEY: "<put-your-key-here>"
----
+# (Secret managed outside of this manifest to avoid overwrites)
 # ---------- API Deployment ----------
 apiVersion: apps/v1
 kind: Deployment
