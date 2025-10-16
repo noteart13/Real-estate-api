@@ -1,8 +1,14 @@
 # app/main.py
 import logging, re, asyncio
 from typing import Optional, Dict, Any, List
-from fastapi import FastAPI, HTTPException, Query, Body
+from fastapi import FastAPI, HTTPException, Query, Body, Request, Response
+import time
 from fastapi.middleware.cors import CORSMiddleware
+from prometheus_fastapi_instrumentator import Instrumentator
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 from app.schemas import SearchResponse, SearchRequest, Property
 from app.scrapers.domain import scrape_domain
 from app.scrapers.realestate import scrape_realestate
@@ -20,6 +26,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 app = FastAPI(title="Realestate-CLIP API")
+Instrumentator().instrument(app).expose(app)
+
+# Rate limiting
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_middleware(SlowAPIMiddleware)
 
 # Add CORS middleware
 app.add_middleware(
@@ -125,16 +137,15 @@ async def _discover_and_scrape(address_or_url: str, include_embeddings: bool, ma
             asyncio.get_running_loop().run_in_executor(None, find_rea_detail, address_or_url),
         )
         tasks = []
-        if dom_url: tasks.append(_scrape_one(dom_url, "domain", include_embeddings, max_images))
-        if rea_url: tasks.append(_scrape_one(rea_url, "realestate", include_embeddings, max_images))
+        if dom_url:
+            tasks.append(_scrape_one(dom_url, "domain", include_embeddings, max_images))
+        if rea_url:
+            tasks.append(_scrape_one(rea_url, "realestate", include_embeddings, max_images))
         
         if not tasks:
             logger.warning(f"No URLs found for address: {address_or_url}")
-            # Return mock data for testing
-            mock_prop = _create_mock_property(address_or_url)
-            if include_embeddings:
-                mock_prop["image_embeddings"] = await _embed_images(mock_prop.get("image_urls", []), max_images)
-            return [mock_prop]
+            # No URLs found under strict rules
+            raise HTTPException(status_code=404, detail=f"No property found for address: {address_or_url}")
         
         results = await asyncio.gather(*tasks, return_exceptions=True)
         valid_results = []
@@ -146,11 +157,7 @@ async def _discover_and_scrape(address_or_url: str, include_embeddings: bool, ma
         
         if not valid_results:
             logger.warning(f"All scraping attempts failed for address: {address_or_url}")
-            # Return mock data for testing
-            mock_prop = _create_mock_property(address_or_url)
-            if include_embeddings:
-                mock_prop["image_embeddings"] = await _embed_images(mock_prop.get("image_urls", []), max_images)
-            return [mock_prop]
+            raise HTTPException(status_code=404, detail=f"No property found for address: {address_or_url}")
 
         # Filter by address similarity to avoid wrong properties
         try:
@@ -183,24 +190,21 @@ async def _discover_and_scrape(address_or_url: str, include_embeddings: bool, ma
         except Exception:
             pass
 
-        # Fallback to mock when similarity is too low
-        mock_prop = _create_mock_property(address_or_url)
-        if include_embeddings:
-            mock_prop["image_embeddings"] = await _embed_images(mock_prop.get("image_urls", []), max_images)
-        return [mock_prop]
+        # No sufficiently similar match
+        raise HTTPException(status_code=404, detail=f"No property found for address: {address_or_url}")
     except Exception as e:
         logger.error(f"Error in _discover_and_scrape: {e}")
-        # Return mock data for testing
-        mock_prop = _create_mock_property(address_or_url)
-        if include_embeddings:
-            mock_prop["image_embeddings"] = await _embed_images(mock_prop.get("image_urls", []), max_images)
-        return [mock_prop]
+        raise HTTPException(status_code=404, detail=f"No property found for address: {address_or_url}")
 
 @app.post("/search", response_model=SearchResponse)
+@limiter.limit("10/minute")
 async def search_property(
+    request: Request,
+    response: Response,
     address: Optional[str] = Query(None, description="Full address or direct listing URL (query)"),
     body: Optional[SearchRequest] = Body(None, description="You can also send JSON body")
 ):
+    t0 = time.perf_counter()
     try:
         # Hợp nhất nguồn input
         if body and body.address:
@@ -233,12 +237,18 @@ async def search_property(
         props = await _discover_and_scrape(addr, include_embeddings, max_images, strict_match=strict_match, allow_near=allow_near)
         if props and include_embeddings:
             set_to_cache(addr, props)
+        duration_ms = int((time.perf_counter() - t0) * 1000)
+        response.headers["X-Search-Duration-ms"] = str(duration_ms)
+        response.headers["Server-Timing"] = f"search;dur={duration_ms}"
         return {"properties": [Property(**p) for p in props]}
     except HTTPException:
         # Re-raise HTTP exceptions
         raise
     except Exception as e:
         logger.error(f"Search failed for address '{addr}': {e}", exc_info=True)
+        duration_ms = int((time.perf_counter() - t0) * 1000)
+        response.headers["X-Search-Duration-ms"] = str(duration_ms)
+        response.headers["Server-Timing"] = f"search;dur={duration_ms}"
         return {"properties": []}
 
 @app.get("/")

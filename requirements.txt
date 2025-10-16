@@ -18,3 +18,7 @@ requests==2.32.3
 torch==2.3.1
 torchvision==0.18.1
 git+https://github.com/openai/CLIP.git
+
+# Rate limiting & metrics
+slowapi==0.1.9
+prometheus-fastapi-instrumentator==6.1.0
