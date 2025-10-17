@@ -84,21 +84,33 @@ kubectl apply -f kubernetes/resources.yaml
 kubectl get service property-service -n property-ns
 ```
 
-## 📚 API Usage
-
-### Search Properties
-```http
-POST /search
-Content-Type: application/json
-
+## 📊 API Response Example
+```json
 {
-  "address": "107/131 Sir Fred Schonell Drive, St Lucia, Qld 4067",
-  "include_embeddings": false,
-  "max_images": 12,
-  "strict_match": false,
-  "allow_near": true
+  "properties": [
+    {
+      "source": "domain",
+      "url": "https://www.domain.com.au/...",
+      "address": "107/131 Sir Fred Schonell Drive, St Lucia, QLD 4067",
+      "price": "$550,000",
+      "bedrooms": 2,
+      "bathrooms": 2,
+      "parking": 1,
+      "property_type": "Apartment",
+      "description": "Modern apartment...",
+      "features": ["Air conditioning", "Pool"],
+      "image_urls": ["https://..."],
+      "image_embeddings": [[0.123, 0.456, ...]]
+    }
+  ]
 }
 ```
+
+## 🔴 Error Codes
+- `400`: Invalid address format
+- `404`: No property found
+- `429`: Rate limit exceeded
+- `503`: Service temporarily unavailable
 
 ### Other Endpoints
 - **Health**: `GET /healthz`
